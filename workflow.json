@@ -1,0 +1,25 @@
+{
+    "workflow_name": "Test Workflow",
+    "tasks": [
+        {
+            "name": "comando_echo",
+            "command": "echo 'Hola desde un comando'",
+            "depends_on": []
+        },
+        {
+            "name": "python_script",
+            "command": "script.py",
+            "depends_on": ["comando_echo"]
+        },
+        {
+            "name": "javascript_script",
+            "command": "script.js",
+            "depends_on": ["python_script"]
+        },
+        {
+            "name": "bash_script",
+            "command": "script.bat",
+            "depends_on": ["javascript_script"]
+        }
+    ]
+}

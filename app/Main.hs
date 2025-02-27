@@ -9,6 +9,8 @@ import System.Process (callCommand)
 import Control.Concurrent (threadDelay)
 import Control.Monad (forM_, when)
 import qualified Data.Map as M
+import TaskExecutions (execute)
+import System.FilePath (takeExtension)
 
 data Task = Task {
     name :: String,
@@ -32,12 +34,20 @@ taskRunner task statusMap = do
     let depsCompleted = all (\dep -> M.findWithDefault False dep statusMap) (depends_on task)
     if depsCompleted then do
         putStrLn $ "Ejecutando tarea: " ++ name task
-        callCommand (command task)  -- Ejecuta el comando en la terminal
-        return $ M.insert (name task) True statusMap  -- Marca como completada
+        let cmd = command task
+        if isScript cmd
+            then execute cmd  -- Ejecutar usando TaskExecutions si es un script
+            else callCommand cmd  -- Ejecutar como comando normal
+        return $ M.insert (name task) True statusMap  -- Marcar como completada
     else do
         putStrLn $ "Esperando dependencias para: " ++ name task
         threadDelay 2000000  -- Espera 2 segundos antes de reintentar
         return statusMap
+
+-- Función para verificar si el comando es un script basado en su extensión
+isScript :: FilePath -> Bool
+isScript path = takeExtension path `elem` [".py", ".js", ".sh", ".bat"]
+
 
 taskExecutor :: [Task] -> TaskStatus -> IO ()
 taskExecutor [] _ = putStrLn "Workflow completado!"
