@@ -13,6 +13,8 @@ import qualified Data.Graph as G
 import Data.Maybe (fromJust)
 import TaskExecutions (execute)
 import System.FilePath (takeExtension)
+import Database (DB, initDB, saveTaskStatus, getTaskStatus)
+
 
 -- Definición de una tarea
 data Task = Task {
@@ -53,30 +55,30 @@ isScript :: FilePath -> Bool
 isScript path = takeExtension path `elem` [".py", ".js", ".sh", ".bat"]
 
 -- Ejecutar una tarea
-executeTask :: Task -> IO ()
-executeTask task = do
-    putStrLn $ "Ejecutando tarea: " ++ name task
+executeTask :: DB -> Task -> IO ()
+executeTask db task = do
     let cmd = command task
     if isScript cmd
         then execute cmd
         else callCommand cmd
+    saveTaskStatus db (name task) True
 
 -- Ejecutar tareas en orden
-executeTasks :: [Task] -> IO ()
-executeTasks [] = putStrLn "Workflow completado!"
-executeTasks (t:ts) = do
-    executeTask t
-    executeTasks ts
+executeTasks :: DB -> [Task] -> IO ()
+executeTasks db [] = putStrLn "Workflow completado!"
+executeTasks db (t:ts) = do
+    executeTask db t
+    executeTasks db ts
 
 main :: IO ()
 main = do
-    putStrLn "Leyendo archivo de workflow..."
+    db <- initDB
+    
     contents <- B.readFile "workflow.json"
     case decode contents of
         Just wf -> do
             putStrLn $ "Ejecutando workflow: " ++ workflow_name wf
-            let orderedTasks = getExecutionOrder (tasks wf)
-            putStrLn "Ejecutando tareas en orden:"
-            mapM_ (putStrLn . name) orderedTasks
-            executeTasks orderedTasks
-        Nothing -> putStrLn "Error al leer el archivo JSON."
+            let executionLevels = getExecutionOrder (tasks wf)
+            executeTasks db executionLevels
+        Nothing -> putStrLn "Error en la lectura"
+
