@@ -7,11 +7,14 @@ import Data.Aeson (FromJSON, decode)
 import qualified Data.ByteString.Lazy as B
 import System.Process (callCommand)
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_)
 import qualified Data.Map as M
+import qualified Data.Graph as G
+import Data.Maybe (fromJust)
 import TaskExecutions (execute)
 import System.FilePath (takeExtension)
 
+-- Definición de una tarea
 data Task = Task {
     name :: String,
     command :: String,
@@ -20,6 +23,7 @@ data Task = Task {
 
 instance FromJSON Task
 
+-- Definición del workflow
 data Workflow = Workflow {
     workflow_name :: String,
     tasks :: [Task]
@@ -27,43 +31,52 @@ data Workflow = Workflow {
 
 instance FromJSON Workflow
 
-type TaskStatus = M.Map String Bool  -- Diccionario de tareas ejecutadas
+-- Construcción del grafo de tareas
+type TaskGraph = (G.Graph, G.Vertex -> (Task, String, [String]), String -> Maybe G.Vertex)
 
-taskRunner :: Task -> TaskStatus -> IO TaskStatus
-taskRunner task statusMap = do
-    let depsCompleted = all (\dep -> M.findWithDefault False dep statusMap) (depends_on task)
-    if depsCompleted then do
-        putStrLn $ "Ejecutando tarea: " ++ name task
-        let cmd = command task
-        if isScript cmd
-            then execute cmd  -- Ejecutar usando TaskExecutions si es un script
-            else callCommand cmd  -- Ejecutar como comando normal
-        return $ M.insert (name task) True statusMap  -- Marcar como completada
-    else do
-        putStrLn $ "Esperando dependencias para: " ++ name task
-        threadDelay 2000000  -- Espera 2 segundos antes de reintentar
-        return statusMap
+buildTaskGraph :: [Task] -> TaskGraph
+buildTaskGraph tasks =
+    let taskMap = M.fromList [(name t, t) | t <- tasks]
+        edges = [(name t, depends_on t) | t <- tasks]
+        nodeInfo (tname, deps) = (fromJust $ M.lookup tname taskMap, tname, deps)
+    in G.graphFromEdges (map nodeInfo edges)
 
--- Función para verificar si el comando es un script basado en su extensión
+-- Obtener el orden topológico del workflow
+getExecutionOrder :: [Task] -> [Task]
+getExecutionOrder tasks =
+    let (graph, nodeFromVertex, _) = buildTaskGraph tasks
+        sortedVertices = G.topSort graph  -- Orden topológico de tareas
+    in map (\v -> let (task, _, _) = nodeFromVertex v in task) sortedVertices
+
+-- Verificar si una tarea es un script basado en su extensión
 isScript :: FilePath -> Bool
 isScript path = takeExtension path `elem` [".py", ".js", ".sh", ".bat"]
 
+-- Ejecutar una tarea
+executeTask :: Task -> IO ()
+executeTask task = do
+    putStrLn $ "Ejecutando tarea: " ++ name task
+    let cmd = command task
+    if isScript cmd
+        then execute cmd
+        else callCommand cmd
 
-taskExecutor :: [Task] -> TaskStatus -> IO ()
-taskExecutor [] _ = putStrLn "Workflow completado!"
-taskExecutor tasks statusMap = do
-    newStatus <- foldl (\acc task -> acc >>= taskRunner task) (return statusMap) tasks
-    let pendingTasks = filter (\t -> not (M.findWithDefault False (name t) newStatus)) tasks
-    if null pendingTasks then putStrLn "Todas las tareas completadas!"
-    else taskExecutor pendingTasks newStatus
-
+-- Ejecutar tareas en orden
+executeTasks :: [Task] -> IO ()
+executeTasks [] = putStrLn "Workflow completado!"
+executeTasks (t:ts) = do
+    executeTask t
+    executeTasks ts
 
 main :: IO ()
 main = do
+    putStrLn "Leyendo archivo de workflow..."
     contents <- B.readFile "workflow.json"
     case decode contents of
         Just wf -> do
             putStrLn $ "Ejecutando workflow: " ++ workflow_name wf
-            let initialStatus = M.fromList [(name t, False) | t <- tasks wf]
-            taskExecutor (tasks wf) initialStatus
+            let orderedTasks = getExecutionOrder (tasks wf)
+            putStrLn "Ejecutando tareas en orden:"
+            mapM_ (putStrLn . name) orderedTasks
+            executeTasks orderedTasks
         Nothing -> putStrLn "Error al leer el archivo JSON."
