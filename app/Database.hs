@@ -1,10 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
-module Database (DB, initDB, saveTaskStatus, getTaskStatus) where
+module Database (DB, initDB, saveWorkflow, getWorkflow) where
 
 import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
 import Control.Exception (bracket)
+import Data.Aeson (encode, decode)
+import qualified Data.ByteString.Lazy.Char8 as B
 
 -- Tipo de conexión a la base de datos
 type DB = Connection
@@ -19,18 +22,22 @@ instance FromRow TaskRecord where
 initDB :: IO DB
 initDB = do
     conn <- open "workflow.db"
-    execute_ conn "CREATE TABLE IF NOT EXISTS tasks (name TEXT PRIMARY KEY, status BOOLEAN)"
+    execute_ conn "CREATE TABLE IF NOT EXISTS workflows (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, definition JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    -- execute_ conn "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, workflow_id INT REFERENCES workflows(id) ON DELETE CASCADE, name TEXT NOT NULL, command TEXT NOT NULL, depends_on TEXT[], created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     return conn
 
--- Guarda o actualiza el estado de una tarea en la base de datos
-saveTaskStatus :: DB -> String -> Bool -> IO ()
-saveTaskStatus conn taskName status = do
-    execute conn "INSERT INTO tasks (name, status) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET status=excluded.status" (taskName, status)
+-- Guardar un nuevo workflow en la base de datos
+saveWorkflow :: DB -> String -> B.ByteString -> IO Int
+saveWorkflow conn name definition = do
+    execute conn "INSERT INTO workflows (name, definition) VALUES (?, ?)" (name, definition)
+    rowId <- lastInsertRowId conn
+    return (fromIntegral rowId :: Int) -- Convertimos directamente a Int
 
--- Obtiene el estado de una tarea desde la base de datos
-getTaskStatus :: DB -> String -> IO (Maybe Bool)
-getTaskStatus conn taskName = do
-    results <- query conn "SELECT status FROM tasks WHERE name = ?" (Only taskName) :: IO [Only Bool]
+-- Obtener un workflow de la base de datos
+getWorkflow :: DB -> Int -> IO (Maybe B.ByteString)
+getWorkflow conn workflowId = do
+    results <- query conn "SELECT definition FROM workflows WHERE id = ?" (Only workflowId) :: IO [Only String]
     return $ case results of
-        [Only status] -> Just status
+        [Only definition] -> Just (B.pack definition)
         _ -> Nothing
+

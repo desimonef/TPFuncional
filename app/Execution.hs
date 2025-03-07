@@ -1,4 +1,4 @@
-module TaskExecutions (execute) where
+module Execution (execute) where
 
 import System.Process (readProcess, readCreateProcess, proc)
 import System.FilePath (takeExtension)
