@@ -1,27 +1,18 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Workflows (Workflow(..), Task(..), buildTaskGraph, executeFromGraph) where
+module Workflows (Workflow(..), Task(..), buildTaskGraph, executeWorkflow) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON)
+import qualified Data.Set as S
+import qualified Data.Map as M
 import System.FilePath (takeExtension)
 import Control.Monad.State
+import Data.Maybe (fromMaybe, mapMaybe)
 import Database (DB)
-import Execution (executeScript)
+import Execution (TaskOutput(..), Task(..), executeScript)
 
--- Estado de ejecución: mapea tarea → output generado
 type ExecutionState = StateT [(String, String)] IO
-
--- Definición de una tarea
-data Task = Task {
-    name :: String,
-    command :: String,
-    input :: [Maybe String],
-    output :: Maybe String,
-    depends_on :: [String]
-} deriving (Show, Generic)
-
-instance FromJSON Task
 
 -- Definición del workflow
 data Workflow = Workflow {
@@ -56,7 +47,7 @@ populateDependencies node adjacency taskNodes =
 
 
 topologicalSort :: TaskGraph -> [TaskNode]
-topologicalSort (TaskGraph taskMap) = reverse (dfsAll (map snd taskMap) [])
+topologicalSort (TaskGraph taskMap) = dfsAll (map snd taskMap) []
 
 dfsAll :: [TaskNode] -> [TaskNode] -> [TaskNode]
 dfsAll [] visited = visited
@@ -73,10 +64,12 @@ dfs (x:xs) visited
 taskName :: TaskNode -> String
 taskName = name . task
 
-executeFromGraph :: DB -> Workflow -> IO ()
-executeFromGraph db (Workflow _ tasks) = do
+executeWorkflow :: DB -> Workflow -> IO ()
+executeWorkflow db (Workflow _ tasks) = do
     let graph = buildTaskGraph tasks
     let order = topologicalSort graph
+    putStrLn "Orden de ejecución de las tareas:"
+    mapM_ (putStrLn . taskName) order  -- 🔹 Imprime cada tarea en el orden en que se ejecutará
     evalStateT (executeWithGraph db order) []
 
 executeWithGraph :: DB -> [TaskNode] -> ExecutionState ()
@@ -84,21 +77,21 @@ executeWithGraph _ [] = liftIO $ putStrLn "Workflow completado!"
 executeWithGraph db (node:rest) = do
     state <- get
     let t = task node
-        cmd = command t
-        args = resolveInputs t state
-    result <- liftIO $ executeScript cmd args
+    result <- liftIO $ executeScript t (resolveInputs t state)
     case result of
         Left err  -> liftIO $ putStrLn err
-        Right out -> do
-            put $ case output t of
-                Just outFile -> (taskName node, outFile) : state
-                Nothing -> (taskName node, out) : state
+        Right taskOutput -> do
+            let outputValue = case taskOutput of
+                    OutputFile outFile -> outFile
+                    OutputValue -> "output_" ++ taskName node  -- 🔹 Nombre genérico para valores en memoria
+            put ((taskName node, outputValue) : state)
             executeWithGraph db rest
 
 resolveInputs :: Task -> [(String, String)] -> [String]
 resolveInputs task state = concatMap resolveInput (input task)
   where
     resolveInput Nothing = []
-    resolveInput (Just ('@':taskName)) = maybe [] (:[]) (lookup taskName state)
+    resolveInput (Just ('@':taskName)) = case lookup taskName state of
+        Just value -> [value]
+        Nothing -> []
     resolveInput (Just inp) = [inp]
-
