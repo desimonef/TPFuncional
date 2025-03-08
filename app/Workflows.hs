@@ -1,21 +1,23 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Workflows (Workflow(..), Task(..), getExecutionOrder, executeTasks) where
+module Workflows (Workflow(..), Task(..), buildTaskGraph, executeFromGraph) where
 
 import GHC.Generics (Generic)
-import qualified Data.Map as M
-import qualified Data.Graph as G
-import Data.Aeson (FromJSON, decode)
-import Data.Maybe (fromJust)
-import System.Process (callCommand)
+import Data.Aeson (FromJSON)
 import System.FilePath (takeExtension)
+import Control.Monad.State
 import Database (DB)
-import Execution (execute)
+import Execution (executeScript)
+
+-- Estado de ejecución: mapea tarea → output generado
+type ExecutionState = StateT [(String, String)] IO
 
 -- Definición de una tarea
 data Task = Task {
     name :: String,
     command :: String,
+    input :: [Maybe String],
+    output :: Maybe String,
     depends_on :: [String]
 } deriving (Show, Generic)
 
@@ -29,40 +31,74 @@ data Workflow = Workflow {
 
 instance FromJSON Workflow
 
--- Construcción del grafo de tareas
-type TaskGraph = (G.Graph, G.Vertex -> (Task, String, [String]), String -> Maybe G.Vertex)
+data TaskNode = TaskNode {
+    task :: Task,
+    dependencies :: [TaskNode]  -- Referencias directas en lugar de nombres
+} deriving (Show)
+
+data TaskGraph = TaskGraph { 
+    taskMap :: [(String, TaskNode)]         
+} deriving (Show)
 
 buildTaskGraph :: [Task] -> TaskGraph
 buildTaskGraph tasks =
-    let taskMap = M.fromList [(name t, t) | t <- tasks]
-        edges = [(name t, depends_on t) | t <- tasks]
-        nodeInfo (tname, deps) = (fromJust $ M.lookup tname taskMap, tname, deps)
-    in G.graphFromEdges (map nodeInfo edges)
+    let adjacencyList = [(name t, depends_on t) | t <- tasks]
+        taskNodes = [(name t, TaskNode t []) | t <- tasks]
+        populatedNodes = map (\(n, node) -> (n, populateDependencies node adjacencyList taskNodes)) taskNodes
+    in TaskGraph populatedNodes
 
--- Obtener el orden topológico del workflow
-getExecutionOrder :: [Task] -> [Task]
-getExecutionOrder tasks =
-    let (graph, nodeFromVertex, _) = buildTaskGraph tasks
-        sortedVertices = G.topSort graph  -- Orden topológico de tareas
-    in map (
-        \v -> let (task, _, _) = nodeFromVertex v in task
-    ) sortedVertices
+populateDependencies :: TaskNode -> [(String, [String])] -> [(String, TaskNode)] -> TaskNode
+populateDependencies node adjacency taskNodes =
+    let taskMap = M.fromList taskNodes
+        depNames = fromMaybe [] (lookup (name . task $ node) adjacency)
+        depNodes = mapMaybe (`M.lookup` taskMap) depNames
+    in node { dependencies = depNodes }
 
--- Verificar si una tarea es un script basado en su extensión
-isScript :: FilePath -> Bool
-isScript path = takeExtension path `elem` [".py", ".js", ".sh", ".bat"]
 
--- Ejecutar una tarea
-taskRunner :: DB -> Task -> IO ()
-taskRunner db task = do
-    let cmd = command task
-    if isScript cmd
-        then execute cmd
-        else callCommand cmd
+topologicalSort :: TaskGraph -> [TaskNode]
+topologicalSort (TaskGraph taskMap) = reverse (dfsAll (map snd taskMap) [])
 
--- Ejecutar tareas en orden
-executeTasks :: DB -> [Task] -> IO ()
-executeTasks db [] = putStrLn "Workflow completado!"
-executeTasks db (t:ts) = do
-    taskRunner db t
-    executeTasks db ts
+dfsAll :: [TaskNode] -> [TaskNode] -> [TaskNode]
+dfsAll [] visited = visited
+dfsAll (node:rest) visited
+    | taskName node `elem` map taskName visited = dfsAll rest visited
+    | otherwise = dfsAll rest (dfs (dependencies node) visited ++ [node])
+
+dfs :: [TaskNode] -> [TaskNode] -> [TaskNode]
+dfs [] visited = visited
+dfs (x:xs) visited
+    | taskName x `elem` map taskName visited = dfs xs visited
+    | otherwise = dfs xs (x : visited)
+
+taskName :: TaskNode -> String
+taskName = name . task
+
+executeFromGraph :: DB -> Workflow -> IO ()
+executeFromGraph db (Workflow _ tasks) = do
+    let graph = buildTaskGraph tasks
+    let order = topologicalSort graph
+    evalStateT (executeWithGraph db order) []
+
+executeWithGraph :: DB -> [TaskNode] -> ExecutionState ()
+executeWithGraph _ [] = liftIO $ putStrLn "Workflow completado!"
+executeWithGraph db (node:rest) = do
+    state <- get
+    let t = task node
+        cmd = command t
+        args = resolveInputs t state
+    result <- liftIO $ executeScript cmd args
+    case result of
+        Left err  -> liftIO $ putStrLn err
+        Right out -> do
+            put $ case output t of
+                Just outFile -> (taskName node, outFile) : state
+                Nothing -> (taskName node, out) : state
+            executeWithGraph db rest
+
+resolveInputs :: Task -> [(String, String)] -> [String]
+resolveInputs task state = concatMap resolveInput (input task)
+  where
+    resolveInput Nothing = []
+    resolveInput (Just ('@':taskName)) = maybe [] (:[]) (lookup taskName state)
+    resolveInput (Just inp) = [inp]
+
