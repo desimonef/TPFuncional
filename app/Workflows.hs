@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Workflows (Workflow(..), Task(..), buildTaskGraph, executeWorkflow) where
+module Workflows (buildTaskGraph, executeWorkflow) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON)
@@ -10,26 +10,8 @@ import System.FilePath (takeExtension)
 import Control.Monad.State
 import Data.Maybe (fromMaybe, mapMaybe)
 import Database (DB)
-import Execution (TaskOutput(..), Task(..), executeScript)
-
-type ExecutionState = StateT [(String, String)] IO
-
--- Definición del workflow
-data Workflow = Workflow {
-    workflow_name :: String,
-    tasks :: [Task]
-} deriving (Show, Generic)
-
-instance FromJSON Workflow
-
-data TaskNode = TaskNode {
-    task :: Task,
-    dependencies :: [TaskNode]  -- Referencias directas en lugar de nombres
-} deriving (Show)
-
-data TaskGraph = TaskGraph { 
-    taskMap :: [(String, TaskNode)]         
-} deriving (Show)
+import Execution (executeScript)
+import Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..))
 
 buildTaskGraph :: [Task] -> TaskGraph
 buildTaskGraph tasks =

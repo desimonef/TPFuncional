@@ -1,43 +1,47 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
 
-module Database (DB, initDB, saveWorkflow, getWorkflow) where
+module Database (DB, initDB, saveWorkflow, getWorkflows, getWorkflow, updateWorkflowStatus, getWorkflowStatus) where
 
 import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
-import Control.Exception (bracket)
 import Data.Aeson (encode, decode)
-import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as BL
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import Types (Workflow(..))
 
--- Tipo de conexión a la base de datos
 type DB = Connection
 
--- Estructura para mapear filas de la base de datos
-data TaskRecord = TaskRecord String Bool deriving (Show)
-
-instance FromRow TaskRecord where
-    fromRow = TaskRecord <$> field <*> field
-
--- Inicializa la base de datos y crea la tabla si no existe
+-- Conexión y creación de tablas
 initDB :: IO DB
 initDB = do
-    conn <- open "workflow.db"
-    execute_ conn "CREATE TABLE IF NOT EXISTS workflows (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, definition JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    -- execute_ conn "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, workflow_id INT REFERENCES workflows(id) ON DELETE CASCADE, name TEXT NOT NULL, command TEXT NOT NULL, depends_on TEXT[], created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    conn <- open "workflows.db"
+    execute_ conn "CREATE TABLE IF NOT EXISTS workflows (name TEXT PRIMARY KEY, definition TEXT, status TEXT)"
     return conn
 
--- Guardar un nuevo workflow en la base de datos
-saveWorkflow :: DB -> String -> B.ByteString -> IO Int
-saveWorkflow conn name definition = do
-    execute conn "INSERT INTO workflows (name, definition) VALUES (?, ?)" (name, definition)
-    rowId <- lastInsertRowId conn
-    return (fromIntegral rowId :: Int) -- Convertimos directamente a Int
+-- Guardar un workflow en la base de datos
+saveWorkflow :: DB -> Workflow -> IO ()
+saveWorkflow conn wf = do
+    let jsonDef = TE.decodeUtf8 . BL.toStrict $ encode wf  -- 🔹 Convertir a Text
+    execute conn "INSERT INTO workflows (name, definition, status) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET definition = ?" 
+        (workflow_name wf, jsonDef, T.pack "pending", jsonDef)  -- 🔹 Convertir "pending" a Text
 
--- Obtener un workflow de la base de datos
-getWorkflow :: DB -> Int -> IO (Maybe B.ByteString)
-getWorkflow conn workflowId = do
-    results <- query conn "SELECT definition FROM workflows WHERE id = ?" (Only workflowId) :: IO [Only String]
-    return $ case results of
-        [Only definition] -> Just (B.pack definition)
+-- Obtener todos los workflows
+getWorkflows :: DB -> IO [String]
+getWorkflows conn = do
+    rows <- query_ conn "SELECT name FROM workflows" :: IO [Only String]
+    return $ map fromOnly rows
+
+-- Obtener un workflow por nombre
+getWorkflow :: DB -> String -> IO (Maybe Workflow)
+getWorkflow conn name = do
+    rows <- query conn "SELECT definition FROM workflows WHERE name = ?" (Only name) :: IO [Only T.Text]
+    return $ case rows of
+        [Only jsonDef] -> decode (BL.fromStrict (TE.encodeUtf8 jsonDef))
         _ -> Nothing
 
+updateWorkflowStatus :: DB -> String -> String -> IO String
+updateWorkflowStatus db name status = return $ "Update Status " ++ name ++ " - " ++ status
+
+getWorkflowStatus :: DB -> String -> IO String
+getWorkflowStatus db name = return $ "Get Status " ++ name ++ " status"

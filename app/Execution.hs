@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Execution (TaskOutput(..), Task(..), executeScript) where
+module Execution (executeScript) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON)
@@ -10,28 +10,7 @@ import System.FilePath (takeExtension)
 import System.Directory (doesFileExist)
 import Control.Exception (catch, SomeException)
 import Data.Text (unpack)
-
--- Nuevo tipo para representar el output de una tarea
-data TaskOutput
-    = OutputFile String
-    | OutputValue
-    deriving (Show, Eq, Generic)
-
-data Task = Task {
-    name :: String,
-    command :: Maybe String,  -- 🔹 Ahora `command` es opcional
-    script :: Maybe String,   -- 🔹 Nuevo campo para scripts
-    input :: [Maybe String],
-    output :: Maybe TaskOutput,
-    depends_on :: [String]
-} deriving (Show, Generic)
-
-instance FromJSON Task
-
-instance FromJSON TaskOutput where
-    parseJSON (String s) = return (OutputFile (unpack s))  -- 🔹 Convertimos `Text` a `String`
-    parseJSON (Object _) = return OutputValue
-    parseJSON _ = fail "Formato de output inválido"
+import Types (Task(..), ExecutionState(..), TaskOutput(..))
 
 executeScript :: Task -> [String] -> IO (Either String TaskOutput)
 executeScript task args = catch
