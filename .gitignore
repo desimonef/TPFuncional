@@ -1,2 +1,8 @@
 /dist-newstyle
-.csv
+*.csv
+*.txt
+*.bat
+*.py
+*.js
+*.sh
+*.json

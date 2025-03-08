@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Database (DB, initDB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById) where
+module Database (DB, initDB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists) where
 
 import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
@@ -29,26 +29,26 @@ saveWorkflow conn wf = do
     rowId <- lastInsertRowId conn
     return (fromIntegral rowId)
 
--- Obtener todos los workflows
-getWorkflows :: DB -> IO [Workflow]
+-- Obtener todos los workflows con ID
+getWorkflows :: DB -> IO [(Int, Workflow)]
 getWorkflows conn = do
     rows <- query_ conn "SELECT id, name, definition FROM workflows" :: IO [(Int, T.Text, T.Text)]
-    return [ Workflow { workflow_name = T.unpack name, tasks = maybe [] id (decode (BL.fromStrict (TE.encodeUtf8 def))) } | (_, name, def) <- rows ]
+    return [ (id, Workflow { workflow_name = T.unpack name, tasks = maybe [] (const []) (decode (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe [Task]) }) | (id, name, def) <- rows ]
 
 -- Obtener un workflow por ID
-getWorkflowById :: DB -> Int -> IO (Maybe Workflow)
+getWorkflowById :: DB -> Int -> IO (Maybe (Int, Workflow))
 getWorkflowById conn wid = do
-    rows <- query conn "SELECT name, definition FROM workflows WHERE id = ?" (Only wid) :: IO [(T.Text, T.Text)]
+    rows <- query conn "SELECT id, name, definition FROM workflows WHERE id = ?" (Only wid) :: IO [(Int, T.Text, T.Text)]
     return $ case rows of
-        [(name, def)] -> decode (BL.fromStrict (TE.encodeUtf8 def))
+        [(id, name, def)] -> Just (id, Workflow { workflow_name = T.unpack name, tasks = maybe [] (const []) (decode (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe [Task]) })
         _ -> Nothing
 
 -- Obtener un workflow por nombre
-getWorkflowByName :: DB -> String -> IO (Maybe Workflow)
+getWorkflowByName :: DB -> String -> IO (Maybe (Int, Workflow))
 getWorkflowByName conn name = do
-    rows <- query conn "SELECT definition FROM workflows WHERE name = ?" (Only name) :: IO [Only T.Text]
+    rows <- query conn "SELECT id, definition FROM workflows WHERE name = ?" (Only name) :: IO [(Int, T.Text)]
     return $ case rows of
-        [Only jsonDef] -> decode (BL.fromStrict (TE.encodeUtf8 jsonDef))
+        [(id, jsonDef)] -> Just (id, Workflow { workflow_name = name, tasks = maybe [] (const []) (decode (BL.fromStrict (TE.encodeUtf8 jsonDef)) :: Maybe [Task]) })
         _ -> Nothing
 
 -- Guardar una tarea en la base de datos
@@ -59,9 +59,24 @@ saveTask conn name filePath = do
     return (fromIntegral rowId)
 
 -- Obtener una tarea por ID
-getTaskById :: DB -> Int -> IO (Maybe Task)
+getTaskById :: DB -> Int -> IO (Maybe (Int, String))
 getTaskById conn tid = do
-    rows <- query conn "SELECT name, file_path FROM tasks WHERE id = ?" (Only tid) :: IO [(T.Text, T.Text)]
+    rows <- query conn "SELECT id, name, file_path FROM tasks WHERE id = ?" (Only tid) :: IO [(Int, T.Text, T.Text)]
     return $ case rows of
-        [(name, filePath)] -> Just $ Task { name = T.unpack name, script = Just (T.unpack filePath), command = Nothing, input = [], output = Nothing, depends_on = [] }
+        [(id, name, _)] -> Just (id, T.unpack name)
         _ -> Nothing
+
+-- Obtener todas las tareas con ID
+getTasks :: DB -> IO [(Int, String)]
+getTasks conn = do
+    rows <- query_ conn "SELECT id, name, file_path FROM tasks" :: IO [(Int, T.Text, T.Text)]
+    return [(id, T.unpack name) | (id, name, _) <- rows]
+
+-- Verificar si una tarea existe en la base de datos
+taskExists :: DB -> String -> IO Bool
+taskExists conn scriptName = do
+    putStrLn $ "Checking existence of task: " ++ scriptName  -- Debugging
+    rows <- query conn "SELECT COUNT(*) FROM tasks WHERE file_path LIKE ?" (Only scriptName) :: IO [Only Int]
+    return $ case rows of
+        [Only count] -> count > 0
+        _ -> False
