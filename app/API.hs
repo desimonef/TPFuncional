@@ -1,57 +1,80 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module API (runServer) where
 
 import Servant
+import Servant.Multipart
 import Network.Wai
 import Network.Wai.Handler.Warp
 import Control.Monad.IO.Class (liftIO)
-import Database (DB, saveWorkflow, getWorkflows, getWorkflow, updateWorkflowStatus, getWorkflowStatus)
-import Workflows (executeWorkflow)
-import Types (Workflow(..))
+import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById)
+import System.Directory (copyFile)
+import GHC.Generics (Generic)
+import Types (Workflow(..), Task(..))
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import qualified Data.ByteString.Lazy as BL
+import System.FilePath ((</>))
 
 -- Definición de la API
 type WorkflowAPI =
-       "workflows" :> ReqBody '[JSON] Workflow :> Post '[JSON] String
-  :<|> "workflows" :> Get '[JSON] [String]
-  :<|> "workflows" :> Capture "name" String :> Get '[JSON] (Maybe Workflow)
-  :<|> "workflows" :> Capture "name" String :> "run" :> Post '[JSON] String
-  :<|> "workflows" :> Capture "name" String :> "status" :> Get '[JSON] String
+       "workflows" :> ReqBody '[JSON] Workflow :> Post '[JSON] Int
+  :<|> "workflows" :> Get '[JSON] [Workflow]
+  :<|> "workflows" :> Capture "id" Int :> Get '[JSON] (Maybe Workflow)
+  :<|> "workflows" :> QueryParam "name" String :> Get '[JSON] (Maybe Workflow)
+  :<|> "tasks" :> MultipartForm Mem TaskUpload :> Post '[JSON] Int
+  :<|> "tasks" :> Capture "id" Int :> Get '[JSON] (Maybe Task)
+
+-- Tipo para recibir archivos
+data TaskUpload = TaskUpload { taskFile :: FileData Mem }
+  deriving (Generic)
+
+instance FromMultipart Mem TaskUpload where
+    fromMultipart form = case lookupFile "taskFile" form of
+        Right file -> Right (TaskUpload file)
+        Left err   -> Left err
 
 -- Implementación de los endpoints
 server :: DB -> Server WorkflowAPI
 server db =
        liftIO . addWorkflow
   :<|> liftIO listWorkflows
-  :<|> liftIO . getWorkflowByName
-  :<|> liftIO . runWorkflow
-  :<|> liftIO . getWorkflowStatusAPI
+  :<|> liftIO . getWorkflowByIdAPI
+  :<|> liftIO . getWorkflowByNameAPI
+  :<|> liftIO . addTask
+  :<|> liftIO . getTaskByIdAPI
   where
-      addWorkflow :: Workflow -> IO String
-      addWorkflow wf = do
-          saveWorkflow db wf
-          return $ "Workflow " ++ workflow_name wf ++ " agregado"
+      addWorkflow :: Workflow -> IO Int
+      addWorkflow wf = saveWorkflow db wf
 
-      listWorkflows :: IO [String]
+      listWorkflows :: IO [Workflow]
       listWorkflows = getWorkflows db
 
-      getWorkflowByName :: String -> IO (Maybe Workflow)
-      getWorkflowByName name = getWorkflow db name
+      getWorkflowByIdAPI :: Int -> IO (Maybe Workflow)
+      getWorkflowByIdAPI = getWorkflowById db
 
-      runWorkflow :: String -> IO String
-      runWorkflow name = do
-          updateWorkflowStatus db name "running"
-          executeWorkflow db (Workflow name [])  -- 🔹 Aquí corregimos el error del Workflow vacío
-          updateWorkflowStatus db name "completed"
-          return $ "Workflow " ++ name ++ " finalizado"
+      getWorkflowByNameAPI :: Maybe String -> IO (Maybe Workflow)
+      getWorkflowByNameAPI (Just name) = getWorkflowByName db name
+      getWorkflowByNameAPI Nothing = return Nothing
 
-      getWorkflowStatusAPI :: String -> IO String
-      getWorkflowStatusAPI name = getWorkflowStatus db name
+      addTask :: TaskUpload -> IO Int
+      addTask (TaskUpload file) = do
+          let fileName = T.unpack $ fdFileName file
+              filePath = "tasks" </> fileName
+          BL.writeFile filePath (fdPayload file)
+          saveTask db fileName filePath
+
+      getTaskByIdAPI :: Int -> IO (Maybe Task)
+      getTaskByIdAPI = getTaskById db
 
 -- Función para levantar el servidor
 runServer :: DB -> IO ()
 runServer db = do
     run 8081 (serve (Proxy :: Proxy WorkflowAPI) (server db))
-
