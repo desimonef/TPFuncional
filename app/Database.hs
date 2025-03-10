@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Database (DB, initDB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists) where
+module Database (DB, initDB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists, saveExecution, getExecutionsByWorkflow, getAllExecutions) where
 
 import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
+import Data.Time.Clock (UTCTime)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy.Char8 as BL
 import qualified Data.Text as T
@@ -18,6 +19,7 @@ initDB = do
     conn <- open "workflows.db"
     execute_ conn "CREATE TABLE IF NOT EXISTS workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, definition TEXT, status TEXT)"
     execute_ conn "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, file_path TEXT)"
+    execute_ conn "CREATE TABLE IF NOT EXISTS executions (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL, timestamp TEXT NOT NULL, FOREIGN KEY(workflow_id) REFERENCES workflows(id))"
     return conn
 
 -- Guardar un workflow en la base de datos
@@ -29,18 +31,17 @@ saveWorkflow conn wf = do
     rowId <- lastInsertRowId conn
     return (fromIntegral rowId)
 
--- Obtener todos los workflows con ID
-getWorkflows :: DB -> IO [(Int, Workflow)]
+-- Obtener todos los workflows con ID y definición en texto plano
+getWorkflows :: DB -> IO [(Int, String, T.Text)]
 getWorkflows conn = do
-    rows <- query_ conn "SELECT id, name, definition FROM workflows" :: IO [(Int, T.Text, T.Text)]
-    return [ (id, Workflow { workflow_name = T.unpack name, tasks = maybe [] (const []) (decode (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe [Task]) }) | (id, name, def) <- rows ]
+    query_ conn "SELECT id, name, definition FROM workflows" :: IO [(Int, String, T.Text)]
 
--- Obtener un workflow por ID
-getWorkflowById :: DB -> Int -> IO (Maybe (Int, Workflow))
+-- Obtener un workflow por ID y devolver su ID y definición en texto plano
+getWorkflowById :: DB -> Int -> IO (Maybe (Int, String, T.Text))
 getWorkflowById conn wid = do
-    rows <- query conn "SELECT id, name, definition FROM workflows WHERE id = ?" (Only wid) :: IO [(Int, T.Text, T.Text)]
+    rows <- query conn "SELECT id, name, definition FROM workflows WHERE id = ?" (Only wid) :: IO [(Int, String, T.Text)]
     return $ case rows of
-        [(id, name, def)] -> Just (id, Workflow { workflow_name = T.unpack name, tasks = maybe [] (const []) (decode (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe [Task]) })
+        [(id, name, def)] -> Just (id, name, def)
         _ -> Nothing
 
 -- Obtener un workflow por nombre
@@ -52,18 +53,18 @@ getWorkflowByName conn name = do
         _ -> Nothing
 
 -- Guardar una tarea en la base de datos
-saveTask :: DB -> String -> String -> IO Int
-saveTask conn name filePath = do
-    execute conn "INSERT INTO tasks (name, file_path) VALUES (?, ?)" (name, filePath)
+saveTask :: DB -> String -> IO Int
+saveTask conn name = do
+    execute conn "INSERT INTO tasks (name) VALUES (?)" (Only name)
     rowId <- lastInsertRowId conn
     return (fromIntegral rowId)
 
 -- Obtener una tarea por ID
 getTaskById :: DB -> Int -> IO (Maybe (Int, String))
 getTaskById conn tid = do
-    rows <- query conn "SELECT id, name, file_path FROM tasks WHERE id = ?" (Only tid) :: IO [(Int, T.Text, T.Text)]
+    rows <- query conn "SELECT id, name FROM tasks WHERE id = ?" (Only tid) :: IO [(Int, T.Text)]
     return $ case rows of
-        [(id, name, _)] -> Just (id, T.unpack name)
+        [(id, name)] -> Just (id, T.unpack name)
         _ -> Nothing
 
 -- Obtener todas las tareas con ID
@@ -76,7 +77,23 @@ getTasks conn = do
 taskExists :: DB -> String -> IO Bool
 taskExists conn scriptName = do
     putStrLn $ "Checking existence of task: " ++ scriptName  -- Debugging
-    rows <- query conn "SELECT COUNT(*) FROM tasks WHERE file_path LIKE ?" (Only scriptName) :: IO [Only Int]
+    rows <- query conn "SELECT COUNT(*) FROM tasks WHERE file_path = ?" (Only scriptName) :: IO [Only Int]
     return $ case rows of
         [Only count] -> count > 0
         _ -> False
+
+saveExecution :: DB -> Int -> UTCTime -> IO ()
+saveExecution conn wid timestamp = do
+    execute conn "INSERT INTO executions (workflow_id, timestamp) VALUES (?, ?)"
+        (wid, timestamp)
+
+getExecutionsByWorkflow :: DB -> Int -> IO [(Int, Int, UTCTime)]
+getExecutionsByWorkflow conn wid = do
+    query conn "SELECT id, workflow_id, timestamp FROM executions WHERE workflow_id = ? ORDER BY timestamp DESC"
+        (Only wid)
+
+getAllExecutions :: DB -> IO [(Int, Int, UTCTime)]
+getAllExecutions conn = do
+    query_ conn "SELECT id, workflow_id, timestamp FROM executions ORDER BY timestamp DESC"
+
+

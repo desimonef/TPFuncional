@@ -1,12 +1,14 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..)) where
+module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..)) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, ToJSON)
 import Control.Monad.State
 import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON)
 import Data.Text (unpack)
+import qualified Data.Text as T
+import Data.Time.Clock (getCurrentTime, UTCTime)
 
 type ExecutionState = StateT [(String, String)] IO
 
@@ -52,3 +54,34 @@ instance FromJSON TaskOutput where
     parseJSON _ = fail "Formato de output inválido"
 
 instance ToJSON TaskOutput
+
+data IdResponse = IdResponse { id :: Int }
+    deriving (Generic, Show)
+
+instance FromJSON IdResponse
+instance ToJSON IdResponse
+
+data WorkflowResponse = WorkflowResponse
+  { workflowId :: Int
+  , workflowName :: String
+  , definition :: T.Text
+  } deriving (Generic, Show)
+
+instance FromJSON WorkflowResponse 
+instance ToJSON WorkflowResponse
+
+data ExecutionResponse = ExecutionResponse
+  { executionStatus :: T.Text
+  } deriving (Generic, Show)
+
+instance FromJSON ExecutionResponse
+instance ToJSON ExecutionResponse
+
+data ExecutionRecord = ExecutionRecord
+  { executionId :: Int
+  , workflow :: Int
+  , timestamp :: UTCTime
+  } deriving (Generic, Show)
+
+instance FromJSON ExecutionRecord
+instance ToJSON ExecutionRecord
