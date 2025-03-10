@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..)) where
+module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), RetryPolicy(..), FailStrategy(..)) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, ToJSON)
@@ -38,11 +38,12 @@ data TaskOutput
 
 data Task = Task {
     name :: String,
-    command :: Maybe String,  -- 🔹 Ahora `command` es opcional
-    script :: Maybe String,   -- 🔹 Nuevo campo para scripts
+    command :: Maybe String,
+    script :: Maybe String,
     input :: [Maybe String],
     output :: Maybe TaskOutput,
-    depends_on :: [String]
+    depends_on :: [String],
+    retryPolicy :: Maybe RetryPolicy -- Nuevo campo
 } deriving (Show, Generic)
 
 instance FromJSON Task
@@ -81,7 +82,22 @@ data ExecutionRecord = ExecutionRecord
   { executionId :: Int
   , workflow :: Int
   , timestamp :: UTCTime
+  , status :: String
   } deriving (Generic, Show)
 
 instance FromJSON ExecutionRecord
 instance ToJSON ExecutionRecord
+
+data RetryPolicy = RetryPolicy {
+    maxRetries :: Int,         -- Número máximo de intentos
+    failStrategy :: FailStrategy -- Estrategia en caso de fallo final
+} deriving (Show, Generic)
+
+instance FromJSON RetryPolicy
+instance ToJSON RetryPolicy
+
+data FailStrategy = FailWorkflow | ContinueWorkflow
+    deriving (Show, Generic)
+
+instance FromJSON FailStrategy
+instance ToJSON FailStrategy

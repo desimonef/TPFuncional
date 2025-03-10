@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Database (DB, initDB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists, saveExecution, getExecutionsByWorkflow, getAllExecutions) where
+module Database (DB, initDB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists, saveExecution, getExecutionsByWorkflow, getAllExecutions, updateExecutionStatus) where
 
 import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
@@ -18,8 +18,8 @@ initDB :: IO DB
 initDB = do
     conn <- open "workflows.db"
     execute_ conn "CREATE TABLE IF NOT EXISTS workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, definition TEXT, status TEXT)"
-    execute_ conn "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, file_path TEXT)"
-    execute_ conn "CREATE TABLE IF NOT EXISTS executions (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL, timestamp TEXT NOT NULL, FOREIGN KEY(workflow_id) REFERENCES workflows(id))"
+    execute_ conn "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)"
+    execute_ conn "CREATE TABLE IF NOT EXISTS executions (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL, timestamp TEXT NOT NULL, status TEXT CHECK(status IN ('started', 'completed', 'failed')) NOT NULL DEFAULT 'started', FOREIGN KEY(workflow_id) REFERENCES workflows(id))"
     return conn
 
 -- Guardar un workflow en la base de datos
@@ -70,30 +70,34 @@ getTaskById conn tid = do
 -- Obtener todas las tareas con ID
 getTasks :: DB -> IO [(Int, String)]
 getTasks conn = do
-    rows <- query_ conn "SELECT id, name, file_path FROM tasks" :: IO [(Int, T.Text, T.Text)]
-    return [(id, T.unpack name) | (id, name, _) <- rows]
+    rows <- query_ conn "SELECT id, name FROM tasks" :: IO [(Int, T.Text)]
+    return [(id, T.unpack name) | (id, name) <- rows]
 
 -- Verificar si una tarea existe en la base de datos
 taskExists :: DB -> String -> IO Bool
 taskExists conn scriptName = do
     putStrLn $ "Checking existence of task: " ++ scriptName  -- Debugging
-    rows <- query conn "SELECT COUNT(*) FROM tasks WHERE file_path = ?" (Only scriptName) :: IO [Only Int]
+    rows <- query conn "SELECT COUNT(*) FROM tasks WHERE name = ?" (Only scriptName) :: IO [Only Int]
     return $ case rows of
         [Only count] -> count > 0
         _ -> False
 
-saveExecution :: DB -> Int -> UTCTime -> IO ()
+saveExecution :: DB -> Int -> UTCTime -> IO Int
 saveExecution conn wid timestamp = do
-    execute conn "INSERT INTO executions (workflow_id, timestamp) VALUES (?, ?)"
-        (wid, timestamp)
+    execute conn "INSERT INTO executions (workflow_id, timestamp, status) VALUES (?, ?, 'started')" (wid, timestamp)
+    [Only lastId] <- query_ conn "SELECT last_insert_rowid()" :: IO [Only Int]
+    return lastId
 
-getExecutionsByWorkflow :: DB -> Int -> IO [(Int, Int, UTCTime)]
+updateExecutionStatus :: DB -> Int -> String -> IO ()
+updateExecutionStatus conn execId newStatus = do
+    execute conn "UPDATE executions SET status = ? WHERE id = ?" (newStatus, execId)
+
+getExecutionsByWorkflow :: DB -> Int -> IO [(Int, Int, UTCTime, String)]
 getExecutionsByWorkflow conn wid = do
-    query conn "SELECT id, workflow_id, timestamp FROM executions WHERE workflow_id = ? ORDER BY timestamp DESC"
+    query conn "SELECT id, workflow_id, timestamp, status FROM executions WHERE workflow_id = ? ORDER BY timestamp DESC"
         (Only wid)
 
-getAllExecutions :: DB -> IO [(Int, Int, UTCTime)]
+getAllExecutions :: DB -> IO [(Int, Int, UTCTime, String)]
 getAllExecutions conn = do
-    query_ conn "SELECT id, workflow_id, timestamp FROM executions ORDER BY timestamp DESC"
-
+    query_ conn "SELECT id, workflow_id, timestamp, status FROM executions ORDER BY timestamp DESC"
 

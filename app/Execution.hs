@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Execution (executeScript) where
+module Execution (executeScript, executeWithRetries) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON)
@@ -48,6 +48,18 @@ executeScript task args = catch
             _ -> fail "Tarea mal definida: debe tener `command` o `script`, pero no ambos."
     )
     (\e -> return $ Left $ "Error ejecutando tarea " ++ name task ++ ": " ++ show (e :: SomeException))
+
+executeWithRetries :: Task -> [String] -> Int -> IO (Either String TaskOutput)
+executeWithRetries task args remainingRetries = do
+    result <- executeScript task args
+    case result of
+        Right output -> return $ Right output
+        Left err -> 
+            if remainingRetries > 0 then do
+                putStrLn $ "Reintentando tarea " ++ name task ++ "... (" ++ show remainingRetries ++ " intentos restantes)"
+                executeWithRetries task args (remainingRetries - 1)
+            else return $ Left err
+
 
 -- Ejecuta un comando normal en la terminal
 runCommand :: String -> [String] -> IO (Either String TaskOutput)

@@ -13,7 +13,7 @@ import Servant
 import Servant.Multipart
 import Network.Wai.Handler.Warp
 import Control.Monad.IO.Class (liftIO)
-import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow)
+import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, updateExecutionStatus)
 import System.Directory (createDirectoryIfMissing)
 import GHC.Generics (Generic)
 import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..))
@@ -115,22 +115,36 @@ server db =
           case result of
               Just (_, _, def) -> case decode (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe Workflow of
                   Just workflow -> do
-                      liftIO $ executeWorkflow db workflow
+                    -- Guardar ejecución con estado "started"
                       timestamp <- liftIO getCurrentTime
-                      liftIO $ saveExecution db wid timestamp
-                      return $ ExecutionResponse "Execution started"
+                      execId <- liftIO $ saveExecution db wid timestamp
+
+                    -- Ejecutar el workflow y obtener si fue exitoso o falló
+                      success <- liftIO $ executeWorkflow db workflow
+                    
+                    -- Determinar el estado final
+                      let finalStatus = if success then "completed" else "failed"
+                    
+                    -- Actualizar el estado en la BD
+                      liftIO $ updateExecutionStatus db execId finalStatus
+
+                    -- Responder a la API
+                      if success
+                          then return $ ExecutionResponse "Execution completed"
+                          else throwError err500 { errBody = "Workflow execution failed" }
                   Nothing -> throwError err400 { errBody = "Invalid workflow format" }
               Nothing -> throwError err404 { errBody = "Workflow not found" }
+
 
       getExecutionsByWorkflowAPI :: Int -> Handler [ExecutionRecord]
       getExecutionsByWorkflowAPI wid = do
           executions <- liftIO $ getExecutionsByWorkflow db wid
-          return $ map (\(eid, wid, ts) -> ExecutionRecord eid wid ts) executions
+          return $ map (\(eid, wid, ts, status) -> ExecutionRecord eid wid ts status) executions
 
       getAllExecutionsAPI :: Handler [ExecutionRecord]
       getAllExecutionsAPI = do
           executions <- liftIO $ getAllExecutions db
-          return $ map (\(eid, wid, ts) -> ExecutionRecord eid wid ts) executions
+          return $ map (\(eid, wid, ts, status) -> ExecutionRecord eid wid ts status) executions
 
 
 
