@@ -10,8 +10,10 @@ import System.FilePath (takeExtension)
 import Control.Monad.State
 import Data.Maybe (fromMaybe, mapMaybe)
 import Database (DB)
-import Execution (executeScript, executeWithRetries)
+import Execution (executeScript, executeWithRetries, checkCondition)
 import Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..))
+import Debug.Trace (trace)
+
 
 buildTaskGraph :: [Task] -> TaskGraph
 buildTaskGraph tasks =
@@ -61,37 +63,44 @@ executeWorkflow db (Workflow _ tasks) = do
 executeWithGraph :: DB -> [TaskNode] -> ExecutionState Bool
 executeWithGraph _ [] = do
     liftIO $ putStrLn "Workflow completado!"
-    return True  -- ✅ Indicar que terminó exitosamente
+    return True
 executeWithGraph db (node:rest) = do
     state <- get
     let t = task node
-    let retries = maybe 0 maxRetries (retryPolicy t)
-    let strategy = maybe FailWorkflow failStrategy (retryPolicy t)
+    shouldRun <- liftIO $ checkCondition t state
 
-    result <- liftIO $ executeWithRetries t (resolveInputs t state) retries
+    if shouldRun
+        then do
+            let retries = maybe 0 maxRetries (retryPolicy t)
+            let strategy = maybe FailWorkflow failStrategy (retryPolicy t)
+            result <- liftIO $ executeWithRetries t (resolveInputs t state) retries
 
-    case result of
-        Left err -> do
-            liftIO $ putStrLn err
-            case strategy of
-                FailWorkflow -> do
-                    liftIO $ putStrLn "Workflow falló debido a una tarea no recuperable."
-                    return False  -- ✅ Indicar fallo
-                ContinueWorkflow -> executeWithGraph db rest
-        Right taskOutput -> do
-            let outputValue = case taskOutput of
-                    OutputFile outFile -> outFile
-                    OutputValue -> "output_" ++ taskName node
-            put ((taskName node, outputValue) : state)
-            executeWithGraph db rest
-
+            case result of
+                Left err -> do
+                    liftIO $ putStrLn err
+                    case strategy of
+                        FailWorkflow -> do
+                            liftIO $ putStrLn "Workflow falló debido a una tarea no recuperable."
+                            return False
+                        ContinueWorkflow -> executeWithGraph db rest
+                Right taskOutput -> do
+                    let outputValue = case taskOutput of
+                            OutputFile outFile -> outFile
+                            OutputValue value -> value  -- 🔹 Guardamos el valor real
+                    liftIO $ putStrLn $ "🔹 Output de " ++ taskName node ++ ": " ++ outputValue
+                    put ((taskName node, outputValue) : state)
+                    executeWithGraph db rest
+        else executeWithGraph db rest
 
 
 resolveInputs :: Task -> [(String, String)] -> [String]
-resolveInputs task state = concatMap resolveInput (input task)
+resolveInputs task state = 
+    let resolved = concatMap resolveInput (input task)
+    in trace ("📌 State actual en resolveInputs: " ++ show state) resolved
   where
     resolveInput Nothing = []
-    resolveInput (Just ('@':taskName)) = case lookup taskName state of
-        Just value -> [value]
-        Nothing -> []
+    resolveInput (Just ('@':taskName)) = 
+        case lookup taskName state of
+            Just value -> [value]
+            Nothing -> trace ("⚠️ No se encontró " ++ taskName ++ " en state") []
     resolveInput (Just inp) = [inp]

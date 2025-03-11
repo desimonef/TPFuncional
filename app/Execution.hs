@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Execution (executeScript, executeWithRetries) where
+module Execution (executeScript, executeWithRetries, checkCondition) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON)
@@ -10,7 +10,8 @@ import System.FilePath (takeExtension)
 import System.Directory (doesFileExist)
 import Control.Exception (catch, SomeException)
 import Data.Text (unpack)
-import Types (Task(..), ExecutionState(..), TaskOutput(..))
+import Types (Task(..), ExecutionState(..), TaskOutput(..), Condition(..))
+import Language.Haskell.Interpreter hiding (name)
 
 executeScript :: Task -> [String] -> IO (Either String TaskOutput)
 executeScript task args = catch
@@ -25,12 +26,12 @@ executeScript task args = catch
 
             (Just cmd, Nothing, _) -> do
                 output <- readProcess cmd args ""
-                putStrLn output
-                return $ Right OutputValue
+                putStrLn $ "Output capturado de " ++ name task ++ ": " ++ output
+                return $ Right (OutputValue output) -- 🔹 Guardar el output real
 
             (Nothing, Just file, Just (OutputFile outFile)) -> do
                 let fullCommand = if takeExtension file == ".bat"
-                                  then ["cmd.exe", "/c", file] ++ args  -- 🔹 Ejecutar correctamente el .bat
+                                  then ["cmd.exe", "/c", file] ++ args
                                   else [selectInterpreter file, file] ++ args
                 output <- readProcess (head fullCommand) (tail fullCommand) ""  
                 writeFile outFile output
@@ -39,15 +40,14 @@ executeScript task args = catch
 
             (Nothing, Just file, _) -> do
                 let fullCommand = if takeExtension file == ".bat"
-                                  then ["cmd.exe", "/c", file] ++ args  -- 🔹 Ejecutar correctamente el .bat
+                                  then ["cmd.exe", "/c", file] ++ args
                                   else [selectInterpreter file, file] ++ args
                 output <- readProcess (head fullCommand) (tail fullCommand) ""  
-                putStrLn output
-                return $ Right OutputValue
-
-            _ -> fail "Tarea mal definida: debe tener `command` o `script`, pero no ambos."
-    )
+                putStrLn $ "Output capturado de " ++ name task ++ ": " ++ output
+                return $ Right (OutputValue output)) -- 🔹 Guardar el output real
+    
     (\e -> return $ Left $ "Error ejecutando tarea " ++ name task ++ ": " ++ show (e :: SomeException))
+
 
 executeWithRetries :: Task -> [String] -> Int -> IO (Either String TaskOutput)
 executeWithRetries task args remainingRetries = do
@@ -60,42 +60,6 @@ executeWithRetries task args remainingRetries = do
                 executeWithRetries task args (remainingRetries - 1)
             else return $ Left err
 
-
--- Ejecuta un comando normal en la terminal
-runCommand :: String -> [String] -> IO (Either String TaskOutput)
-runCommand cmd args = do
-    output <- readProcess cmd args ""
-    putStrLn output
-    return $ Right OutputValue
-
--- Detecta el intérprete correcto y ejecuta un script
-runScript :: FilePath -> [String] -> IO (Either String TaskOutput)
-runScript path args = do
-    let interpreter = selectInterpreter path
-    output <- readProcess interpreter (path : args) ""
-    putStrLn output
-    return $ Right OutputValue
-
-executeFile :: FilePath -> [String] -> IO (Either String TaskOutput)
-executeFile path args = catch
-    (do
-        let interpreter = selectInterpreter path
-        output <- readProcess interpreter (path : args) ""
-        putStrLn $ "Archivo generado: " ++ path  -- 🔹 Debug: Ver si el archivo se crea
-        return $ Right OutputValue
-    )
-    (\e -> return $ Left $ "Error ejecutando archivo " ++ path ++ ": " ++ show (e :: SomeException))
-
-
--- Ejecuta un comando normal en la terminal
-executeCommand :: String -> [String] -> IO (Either String TaskOutput)
-executeCommand cmd args = catch
-    (do
-        output <- readProcess cmd args ""
-        putStrLn output  -- 🔹 Ahora imprime la salida del comando en la terminal
-        return $ Right OutputValue
-    )
-    (\e -> return $ Left $ "Error ejecutando comando " ++ cmd ++ ": " ++ show (e :: SomeException))
 
 selectInterpreter :: FilePath -> String
 selectInterpreter path =
@@ -110,3 +74,44 @@ selectInterpreter path =
 -- Elimina el salto de línea final del output
 stripNewline :: String -> String
 stripNewline = reverse . dropWhile (== '\n') . reverse
+
+
+checkCondition :: Task -> [(String, String)] -> IO Bool
+checkCondition task state =
+    case condition task of
+        AlwaysRun -> return True
+        SuccessCondition prevTask ->
+            return $ case lookup prevTask state of
+                Just _ -> True
+                Nothing -> False
+        OutputValueCondition prevTask condStr ->
+            case lookup prevTask state of
+                Just value -> evaluateCondition condStr value
+                Nothing -> return False
+        OutputFileCondition prevTask condStr ->
+            case lookup prevTask state of
+                Just filePath -> evaluateFileCondition condStr filePath
+                Nothing -> return False
+
+
+evaluateCondition :: String -> String -> IO Bool
+evaluateCondition conditionCode inputValue = do
+    result <- runInterpreter $ do
+        setImports ["Prelude"]
+        interpret ("(" ++ conditionCode ++ ") " ++ show inputValue) (as :: Bool)
+    case result of
+        Left err -> do
+            putStrLn $ "Error evaluando condición: " ++ show err
+            return False
+        Right val -> return val
+
+evaluateFileCondition :: String -> String -> IO Bool
+evaluateFileCondition conditionCode filePath = do
+    result <- runInterpreter $ do
+        setImports ["Prelude", "System.Directory"]
+        interpret ("(" ++ conditionCode ++ ") " ++ show filePath) (as :: IO Bool)
+    case result of
+        Left err -> do
+            putStrLn $ "Error evaluando condición de archivo: " ++ show err
+            return False
+        Right action -> action  -- Ejecuta la acción IO Bool

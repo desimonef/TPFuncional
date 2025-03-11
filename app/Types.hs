@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE InstanceSigs #-}
 
-module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), RetryPolicy(..), FailStrategy(..)) where
+module Types (Workflow(..), Task(..), ExecutionState(..), Condition(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), RetryPolicy(..), FailStrategy(..)) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, ToJSON)
@@ -30,10 +31,9 @@ data TaskGraph = TaskGraph {
     taskMap :: [(String, TaskNode)]         
 } deriving (Show)
 
--- Nuevo tipo para representar el output de una tarea
 data TaskOutput
     = OutputFile String
-    | OutputValue
+    | OutputValue String  
     deriving (Show, Eq, Generic)
 
 data Task = Task {
@@ -43,16 +43,16 @@ data Task = Task {
     input :: [Maybe String],
     output :: Maybe TaskOutput,
     depends_on :: [String],
-    retryPolicy :: Maybe RetryPolicy -- Nuevo campo
+    retryPolicy :: Maybe RetryPolicy,
+    condition :: Condition  -- Nuevo campo agregado
 } deriving (Show, Generic)
 
 instance FromJSON Task
 instance ToJSON Task
 
 instance FromJSON TaskOutput where
-    parseJSON (String s) = return (OutputFile (unpack s))  -- 🔹 Convertimos `Text` a `String`
-    parseJSON (Object _) = return OutputValue
-    parseJSON _ = fail "Formato de output inválido"
+    parseJSON (String s) = return (OutputFile (unpack s))  -- 🔹 Interpreta strings como archivos
+    parseJSON _ = return (OutputValue "")
 
 instance ToJSON TaskOutput
 
@@ -101,3 +101,15 @@ data FailStrategy = FailWorkflow | ContinueWorkflow
 
 instance FromJSON FailStrategy
 instance ToJSON FailStrategy
+
+data Condition
+    = SuccessCondition String  -- La tarea solo se ejecuta si la tarea dada tuvo éxito
+    | OutputValueCondition String String -- Condición sobre el output de otra tarea
+    | OutputFileCondition String String -- Condición sobre un archivo generado
+    | AlwaysRun  -- Se ejecuta siempre
+    deriving (Show, Generic)
+
+instance FromJSON Condition
+instance ToJSON Condition
+
+
