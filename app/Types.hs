@@ -1,10 +1,11 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), RetryPolicy(..), FailStrategy(..)) where
+module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), RetryPolicy(..), FailStrategy(..), ExecutionPlan(..)) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, ToJSON)
 import Control.Monad.State
+import Control.Monad.Writer
 import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON)
 import Data.Text (unpack)
 import qualified Data.Text as T
@@ -33,7 +34,7 @@ data TaskGraph = TaskGraph {
 -- Nuevo tipo para representar el output de una tarea
 data TaskOutput
     = OutputFile String
-    | OutputValue
+    | OutputValue String
     deriving (Show, Eq, Generic)
 
 data Task = Task {
@@ -51,8 +52,7 @@ instance ToJSON Task
 
 instance FromJSON TaskOutput where
     parseJSON (String s) = return (OutputFile (unpack s))  -- 🔹 Convertimos `Text` a `String`
-    parseJSON (Object _) = return OutputValue
-    parseJSON _ = fail "Formato de output inválido"
+    parseJSON _= return (OutputValue "")
 
 instance ToJSON TaskOutput
 
@@ -101,3 +101,9 @@ data FailStrategy = FailWorkflow | ContinueWorkflow
 
 instance FromJSON FailStrategy
 instance ToJSON FailStrategy
+
+data ExecutionPlan = ExecutionPlan
+    { execCommand :: String
+    , execArgs    :: [String]
+    , execOutput  :: Maybe TaskOutput
+    }

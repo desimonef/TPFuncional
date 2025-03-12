@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Workflows (buildTaskGraph, executeWorkflow) where
+module Workflows (executeWorkflow) where
 
 import GHC.Generics (Generic)
 import Data.Aeson (FromJSON)
@@ -8,82 +8,58 @@ import qualified Data.Set as S
 import qualified Data.Map as M
 import System.FilePath (takeExtension)
 import Control.Monad.State
+import Control.Monad.Writer
+import Control.Monad.IO.Class (liftIO)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Database (DB)
 import Execution (executeScript, executeWithRetries)
-import Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..))
+import Graph(buildTaskGraph, topologicalSort, taskName)
+import Types (Workflow(..), Task(..), TaskNode(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..), ExecutionState(..))
+import Monad(ExecutionState, ExecutionMonad, logMsg, updateState, getState)
 
-buildTaskGraph :: [Task] -> TaskGraph
-buildTaskGraph tasks =
-    let adjacencyList = [(name t, depends_on t) | t <- tasks]
-        taskNodes = [(name t, TaskNode t []) | t <- tasks]
-        populatedNodes = map (\(n, node) -> (n, populateDependencies node adjacencyList taskNodes)) taskNodes
-    in TaskGraph populatedNodes
-
-populateDependencies :: TaskNode -> [(String, [String])] -> [(String, TaskNode)] -> TaskNode
-populateDependencies node adjacency taskNodes =
-    let taskMap = M.fromList taskNodes
-        depNames = fromMaybe [] (lookup (name . task $ node) adjacency)
-        depNodes = mapMaybe (`M.lookup` taskMap) depNames
-    in node { dependencies = depNodes }
-
-
-topologicalSort :: TaskGraph -> [TaskNode]
-topologicalSort (TaskGraph taskMap) = dfsAll (map snd taskMap) []
-
-dfsAll :: [TaskNode] -> [TaskNode] -> [TaskNode]
-dfsAll [] visited = visited
-dfsAll (node:rest) visited
-    | taskName node `elem` map taskName visited = dfsAll rest visited
-    | otherwise = dfsAll rest (dfs (dependencies node) visited ++ [node])
-
-dfs :: [TaskNode] -> [TaskNode] -> [TaskNode]
-dfs [] visited = visited
-dfs (x:xs) visited
-    | taskName x `elem` map taskName visited = dfs xs visited
-    | otherwise = dfs xs (x : visited)
-
-taskName :: TaskNode -> String
-taskName = name . task
 
 executeWorkflow :: DB -> Workflow -> IO Bool
 executeWorkflow db (Workflow _ tasks) = do
     let graph = buildTaskGraph tasks
     let order = topologicalSort graph
-    putStrLn "Orden de ejecución de las tareas:"
-    mapM_ (putStrLn . taskName) order  -- 🔹 Imprime cada tarea en el orden en que se ejecutará
+    (result, logOutput) <- runWriterT (evalStateT (executeWithGraph db order) [])
     
-    -- Capturar el resultado de la ejecución
-    evalStateT (executeWithGraph db order) []
+    -- Imprimir el log de ejecución
+    putStrLn "=== Execution Log ==="
+    mapM_ putStrLn logOutput
+
+    return result
 
 
-
-executeWithGraph :: DB -> [TaskNode] -> ExecutionState Bool
+executeWithGraph :: DB -> [TaskNode] -> ExecutionMonad Bool
 executeWithGraph _ [] = do
-    liftIO $ putStrLn "Workflow completado!"
-    return True  -- ✅ Indicar que terminó exitosamente
+    logMsg "Workflow completado!"
+    return True
 executeWithGraph db (node:rest) = do
-    state <- get
+    state <- getState
     let t = task node
     let retries = maybe 0 maxRetries (retryPolicy t)
     let strategy = maybe FailWorkflow failStrategy (retryPolicy t)
 
-    result <- liftIO $ executeWithRetries t (resolveInputs t state) retries
+    result <- executeWithRetries t (resolveInputs t state) retries
 
     case result of
         Left err -> do
-            liftIO $ putStrLn err
+            logMsg $ "Fallo en la tarea: " ++ taskName node
             case strategy of
                 FailWorkflow -> do
-                    liftIO $ putStrLn "Workflow falló debido a una tarea no recuperable."
-                    return False  -- ✅ Indicar fallo
+                    logMsg "Finalizando workflow debido a un fallo no recuperable."
+                    return False
                 ContinueWorkflow -> executeWithGraph db rest
         Right taskOutput -> do
             let outputValue = case taskOutput of
                     OutputFile outFile -> outFile
-                    OutputValue -> "output_" ++ taskName node
-            put ((taskName node, outputValue) : state)
+                    OutputValue outValue -> outValue
+            updateState (taskName node) outputValue
+            logMsg $ "Tarea " ++ taskName node ++ " finalizada con salida: " ++ outputValue
             executeWithGraph db rest
+
+
 
 
 
