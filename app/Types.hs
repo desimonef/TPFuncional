@@ -42,7 +42,7 @@ data Task = Task {
     command :: Maybe String,
     script :: Maybe String,
     input :: [Maybe String],
-    output :: Maybe TaskOutput,
+    output :: Maybe String,
     depends_on :: [String],
     retryPolicy :: Maybe RetryPolicy -- Nuevo campo
 } deriving (Show, Generic)
@@ -50,10 +50,7 @@ data Task = Task {
 instance FromJSON Task
 instance ToJSON Task
 
-instance FromJSON TaskOutput where
-    parseJSON (String s) = return (OutputFile (unpack s))  -- 🔹 Convertimos `Text` a `String`
-    parseJSON _= return (OutputValue "")
-
+instance FromJSON TaskOutput 
 instance ToJSON TaskOutput
 
 data IdResponse = IdResponse { id :: Int }
@@ -105,5 +102,5 @@ instance ToJSON FailStrategy
 data ExecutionPlan = ExecutionPlan
     { execCommand :: String
     , execArgs    :: [String]
-    , execOutput  :: Maybe TaskOutput
+    , execOutput  :: TaskOutput
     }

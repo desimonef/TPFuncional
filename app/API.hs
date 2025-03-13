@@ -95,9 +95,15 @@ server db =
 
       addTask :: TaskUpload -> Handler IdResponse
       addTask (TaskUpload file) = do
-          let fileName = T.unpack $ fdFileName file
-          liftIO $ BL.writeFile fileName (fdPayload file)
-          IdResponse <$> liftIO (saveTask db fileName)
+          let dir = "./tasks"  
+              fileName = T.unpack $ fdFileName file
+              filePath = dir </> fileName  
+
+          liftIO $ do
+              createDirectoryIfMissing True dir  
+              BL.writeFile filePath (fdPayload file)  
+    
+          IdResponse <$> liftIO (saveTask db fileName) 
 
       getTaskByIdAPI :: Int -> Handler (Int, String)
       getTaskByIdAPI tid = do
