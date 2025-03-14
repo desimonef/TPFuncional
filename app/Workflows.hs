@@ -14,7 +14,7 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import Database (DB)
 import Execution (executeScript, executeWithRetries)
 import Graph(buildTaskGraph, topologicalSort, taskName)
-import Types (Workflow(..), Task(..), TaskNode(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..), ExecutionState(..))
+import Types (Workflow(..), Task(..), TaskNode(..), TaskInput(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..))
 import Monad(ExecutionState, ExecutionMonad, logMsg, updateState, getState)
 
 
@@ -52,22 +52,25 @@ executeWithGraph db (node:rest) = do
                     return False
                 ContinueWorkflow -> executeWithGraph db rest
         Right taskOutput -> do
-            let outputValue = case taskOutput of
-                    OutputFile outFile -> outFile
-                    OutputValue outValue -> outValue
-            updateState (taskName node) outputValue
-            logMsg $ "Tarea " ++ taskName node ++ " finalizada con salida: " ++ outputValue
+            updateState (taskName node) taskOutput
+            logMsg $ "Tarea " ++ taskName node ++ " finalizada con salida: " ++ show taskOutput
             executeWithGraph db rest
 
 
-
-
-
-resolveInputs :: Task -> [(String, String)] -> [String]
-resolveInputs task state = concatMap resolveInput (input task)
+resolveInputs :: Task -> ExecutionState -> [TaskInput]
+resolveInputs task state = map resolveInput (input task)
   where
-    resolveInput Nothing = []
-    resolveInput (Just ('@':taskName)) = case lookup taskName state of
-        Just value -> [value]
-        Nothing -> []
-    resolveInput (Just inp) = [inp]
+    resolveInput :: TaskInput -> TaskInput
+    resolveInput (VarInput ('@':taskName)) = 
+        case lookup taskName state of
+            Just (OutputValue value) -> VarInput value  -- Si la tarea generó un valor, lo usamos como VarInput
+            Just (OutputFile _)      -> error $ "Error: Se esperaba un valor, pero el output de " ++ taskName ++ " es un archivo."
+            Nothing                  -> error $ "Referencia a tarea desconocida: " ++ taskName
+
+    resolveInput (FileInput ('@':taskName)) =
+        case lookup taskName state of
+            Just (OutputFile filePath) -> FileInput filePath  -- Si la tarea generó un archivo, lo usamos como FileInput
+            Just (OutputValue _)       -> error $ "Error: Se esperaba un archivo, pero el output de " ++ taskName ++ " es un valor."
+            Nothing                    -> error $ "Referencia a tarea desconocida: " ++ taskName
+
+    resolveInput ti = ti  -- Si no es una referencia a otra tarea, lo deja igual

@@ -2,7 +2,7 @@
 
 module Graph(buildTaskGraph, topologicalSort, taskName) where
 
-import Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..))
+import Types (Workflow(..), Task(..), TaskNode(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..))
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe, mapMaybe)
 

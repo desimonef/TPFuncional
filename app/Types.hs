@@ -1,17 +1,16 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Types (Workflow(..), Task(..), ExecutionState(..), TaskNode(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), RetryPolicy(..), FailStrategy(..), ExecutionPlan(..)) where
+module Types (Workflow(..), Task(..), TaskNode(..), TaskInput(..), TaskOutput(..), TaskGraph(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), RetryPolicy(..), FailStrategy(..), ExecutionPlan(..)) where
 
 import GHC.Generics (Generic)
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON, ToJSON, (.:?), withObject, (.:), Value(..))
+import qualified Data.Aeson.Key as Key
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON)
 import Data.Text (unpack)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime, UTCTime)
-
-type ExecutionState = StateT [(String, String)] IO
 
 -- Definición del workflow
 data Workflow = Workflow {
@@ -41,7 +40,7 @@ data Task = Task {
     name :: String,
     command :: Maybe String,
     script :: Maybe String,
-    input :: [Maybe String],
+    input :: [TaskInput],
     output :: Maybe String,
     depends_on :: [String],
     retryPolicy :: Maybe RetryPolicy -- Nuevo campo
@@ -52,6 +51,23 @@ instance ToJSON Task
 
 instance FromJSON TaskOutput 
 instance ToJSON TaskOutput
+
+data TaskInput
+    = FileInput String  
+    | VarInput String  
+    deriving (Show, Eq, Generic)
+
+instance FromJSON TaskInput where
+    parseJSON = withObject "TaskInput" $ \o -> do
+        mFile <- o .:? Key.fromString "file"
+        mVar  <- o .:? Key.fromString "var"
+        case (mFile, mVar) of
+            (Just file, Nothing) -> return $ FileInput file
+            (Nothing, Just var)  -> return $ VarInput var
+            _ -> fail "TaskInput debe contener exactamente una clave 'file' o 'var'"
+
+
+instance ToJSON TaskInput
 
 data IdResponse = IdResponse { id :: Int }
     deriving (Generic, Show)
@@ -101,6 +117,6 @@ instance ToJSON FailStrategy
 
 data ExecutionPlan = ExecutionPlan
     { execCommand :: String
-    , execArgs    :: [String]
+    , execArgs    :: [TaskInput]
     , execOutput  :: TaskOutput
     }

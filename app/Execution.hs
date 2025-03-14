@@ -4,41 +4,39 @@
 module Execution (executeScript, executeWithRetries) where
 
 import GHC.Generics (Generic)
-import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON, (.:), decode)
+import Data.Aeson (FromJSON, withObject, Value(..), Object, (.:?), parseJSON, (.:), decode)
+import qualified Data.Aeson.KeyMap as KM
 import System.Process (readProcess)
-import System.FilePath (takeExtension)
+import System.FilePath (takeExtension, takeFileName)
 import System.Directory (doesFileExist, makeAbsolute)
 import Control.Exception (catch, SomeException)
 import Data.Text (unpack)
-import Types (Task(..), ExecutionState(..), TaskOutput(..), ExecutionPlan(..))
+import Types (Task(..), TaskInput(..), TaskOutput(..), ExecutionPlan(..))
 import Monad(ExecutionMonad, getState, logMsg, updateState)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (toLower)
 import qualified Data.ByteString.Lazy.Char8 as B
 
 -- 🔹 Construye el ExecutionPlan a partir de una Task
-buildExecutionPlan :: Task -> [String] -> Maybe ExecutionPlan
+buildExecutionPlan :: Task -> [TaskInput] -> Maybe ExecutionPlan
 buildExecutionPlan task args =
     case (command task, script task, taskToTaskOutput task) of
         (Just cmd, Nothing, outFile) -> Just (ExecutionPlan cmd args outFile)
         (Nothing, Just file, outFile) -> Just (ExecutionPlan file args outFile)
         _ -> Nothing
 
-executeScript :: Task -> [String] -> ExecutionMonad (Either String TaskOutput)
+executeScript :: Task -> [TaskInput] -> ExecutionMonad (Either String TaskOutput)
 executeScript task args = do
     logMsg $ "Preparando ejecución de tarea: " ++ name task
     case buildExecutionPlan task args of
         Just plan -> do
-            logMsg $ "Ejecutando: " ++ executionCommand plan
             manageContainer plan
         Nothing -> do
             logMsg "Error: Tarea mal definida, debe tener `command` o `script`, pero no ambos."
             return $ Left "Tarea mal definida"
 
-executionCommand :: ExecutionPlan -> String
-executionCommand (ExecutionPlan cmd args _) = cmd ++ " " ++ unwords args
 
-executeWithRetries :: Task -> [String] -> Int -> ExecutionMonad (Either String TaskOutput)
+executeWithRetries :: Task -> [TaskInput] -> Int -> ExecutionMonad (Either String TaskOutput)
 executeWithRetries task args remainingRetries = do
     logMsg $ "Ejecutando tarea: " ++ name task
     result <- executeScript task args  
@@ -69,6 +67,10 @@ convertToDockerPath :: String -> String
 convertToDockerPath (d:':':xs) = '/' : toLower d : map (\c -> if c == '\\' then '/' else c) xs
 convertToDockerPath path       = map (\c -> if c == '\\' then '/' else c) path
 
+getInputValue :: TaskInput -> String
+getInputValue (FileInput file) = "/app/" ++ takeFileName file  -- Ahora apunta correctamente al contenedor
+getInputValue (VarInput var)   = var
+
 manageContainer :: ExecutionPlan -> ExecutionMonad (Either String TaskOutput)
 manageContainer plan = do
     let command = execCommand plan
@@ -78,34 +80,59 @@ manageContainer plan = do
         then do
             absoluteScriptPath <- liftIO $ makeAbsolute ("./tasks/" ++ command)
             let dockerScriptPath = convertToDockerPath absoluteScriptPath  
-            
-            let cleanArgs = map (filter (/= '\r') . filter (/= '\n')) (execArgs plan)
-            let containerArgs = ["run", "-d", "--rm=false", "-v", dockerScriptPath ++ ":/app/" ++ command, dockerImage, "sh", "-c", "chmod +r /app/" ++ command ++ " && " ++ interpreter ++ " /app/" ++ command ++ " " ++ unwords cleanArgs ++ " && sleep infinity"]
-            logMsg $ "Ejecutando script en Docker con args procesados: " ++ show (execArgs plan)
 
-            logMsg $ "Ejecutando script en Docker: " ++ dockerImage ++ " " ++ unwords containerArgs
-            containerIdResult <- liftIO $ runCommand containerArgs
+            let inputs = execArgs plan 
+
+            let fileInputs = [filePath | FileInput filePath <- inputs]
+            logMsg $ "fileInputs: " ++ show fileInputs
+
+            containerIdResult <- liftIO $ runCommand 
+                ["create", "--rm=false", "-v", dockerScriptPath ++ ":/app/" ++ command, dockerImage, "sh", "-c", "sleep infinity"]
 
             case containerIdResult of
                 Left err -> do
-                    logMsg $ "Error iniciando contenedor: " ++ err
+                    logMsg $ "Error creando contenedor: " ++ err
                     return $ Left err
                 Right containerId -> do
-                    logMsg $ "Contenedor iniciado con ID: " ++ containerId
+                    logMsg $ "Contenedor creado con ID: " ++ containerId
 
-                    -- 🔹 Capturar logs del contenedor
-                    logsResult <- liftIO $ runCommand ["logs", containerId]
+                    -- 🔹 Paso 2: Copiar archivos al contenedor
+                    liftIO $ mapM_ (\file -> do
+                        let destFile = takeFileName file 
+                        runCommand ["cp", file, containerId ++ ":/app/" ++ destFile]) fileInputs
 
-                    -- 🔹 Procesar resultado antes de eliminar el contenedor
-                    result <- processExecutionResult plan containerId logsResult
+                    -- 🔹 Paso 3: Iniciar el contenedor
+                    _ <- liftIO $ runCommand ["start", containerId]
 
-                    -- 🔹 Eliminar el contenedor después de copiar los archivos
-                    --_ <- liftIO $ runCommand ["docker", "rm", "-f", containerId]
+                    -- 🔹 Paso 4: Ejecutar el script dentro del contenedor
+                    let args = [getInputValue input | input <- inputs]
+                    -- let cleanArgs = map show args
+                    let scriptExecutionCmd = interpreter ++ " /app/" ++ command ++ " " ++ unwords args
 
-                    return result
+                    logMsg $ "Corriendo comando: docker exec " ++ containerId ++ " sh -c " ++ show scriptExecutionCmd
+
+                    execResult <- liftIO $ runCommand ["exec", containerId, "sh", "-c", scriptExecutionCmd]
+
+                    case execResult of
+                        Left err -> do
+                            logMsg $ "Error ejecutando script en contenedor: " ++ err
+                            return $ Left err
+                        Right _ -> do
+                            logMsg $ "Script ejecutado exitosamente en contenedor " ++ containerId
+
+                            -- 🔹 Capturar logs del contenedor
+                            logsResult <- liftIO $ runCommand ["logs", containerId]
+
+                            -- 🔹 Procesar resultado antes de eliminar el contenedor
+                            result <- processExecutionResult plan containerId logsResult
+
+                            -- 🔹 Eliminar el contenedor después de copiar los archivos
+                            -- _ <- liftIO $ runCommand ["rm", "-f", containerId]
+
+                            return result
 
         else do
-            let containerArgs = ["run", "-d", "-v", convertToDockerPath "./tasks" ++ ":/tasks", dockerImage, "sh", "-c", command] ++ execArgs plan
+            let containerArgs = ["run", "-d", "-v", convertToDockerPath "./tasks" ++ ":/tasks", dockerImage, "sh", "-c", command]
 
             logMsg $ "Ejecutando comando en Docker: " ++ dockerImage ++ " " ++ unwords containerArgs
             containerIdResult <- liftIO $ runCommand containerArgs
@@ -122,12 +149,21 @@ manageContainer plan = do
 
                     processExecutionResult plan containerId logsResult
 
-extractJSONResult :: String -> Maybe String
-extractJSONResult output =
-    case dropWhile (/= ':') output of  -- Buscamos el primer ':'
-        (':':'"':rest) -> Just (takeWhile (/= '"') rest)  -- Extraemos hasta la siguiente '"'
-        _ -> Nothing  -- No se encontró el formato esperado
+extractJSONResult :: B.ByteString -> Maybe String
+extractJSONResult output = do 
+    jsonObject <- decode output :: Maybe Object
+    value <- KM.lookup "result" jsonObject  -- Uso correcto de KeyMap.lookup
+    pure (valueToString value)
 
+
+valueToString :: Value -> String
+valueToString (String s)  = unpack s
+valueToString (Number n)  = show n
+valueToString (Bool b)    = show b
+valueToString Null        = "null"
+valueToString (Array a)   = show a
+valueToString (Object o)  = show o
+    
 taskToTaskOutput :: Task -> TaskOutput
 taskToTaskOutput task = buildTaskOutput (output task)
 
@@ -162,9 +198,11 @@ processExecutionResult plan containerId (Right logs) = do
         -- 🔹 Si es un OutputValue, asumimos que la salida es JSON y extraemos `x`
         OutputValue _ -> do
             logMsg "Procesando OutputValue"
-            case extractJSONResult logs of
+            case extractJSONResult (B.pack logs) of
                 Just result -> return $ Right (OutputValue result)
-                Nothing     -> return $ Left "Error: la salida de la tarea no es un JSON válido con { result: x }"
+                Nothing     -> do
+                    logMsg "no"
+                    return $ Left "Error: la salida de la tarea no es un JSON válido con { result: x }"
 
 
 

@@ -3,12 +3,13 @@ module Monad(ExecutionState, ExecutionMonad, logMsg, updateState, getState) wher
 import Control.Monad.State
 import Control.Monad.Writer
 import Control.Monad.IO.Class
+import Types(TaskOutput)
 
 -- Tipo para los logs de ejecución
 type ExecutionLog = [String]
 
 -- Estado: Guarda el estado de cada tarea ("success", "failed")
-type ExecutionState = [(String, String)]
+type ExecutionState = [(String, TaskOutput)]
 
 -- Combinación de `StateT` y `WriterT` con IO
 type ExecutionMonad a = StateT ExecutionState (WriterT ExecutionLog IO) a
@@ -22,5 +23,5 @@ getState :: ExecutionMonad ExecutionState
 getState = get
 
 -- Actualizar el estado de una tarea
-updateState :: String -> String -> ExecutionMonad ()
+updateState :: String -> TaskOutput -> ExecutionMonad ()
 updateState task result = modify ((task, result) :)
