@@ -7,7 +7,7 @@ import Data.Aeson (FromJSON, ToJSON, (.:?), withObject, (.:), Value(..))
 import qualified Data.Aeson.Key as Key
 import Control.Monad.State
 import Control.Monad.Writer
-import Data.Aeson (FromJSON, withObject, Value(..), (.:?), parseJSON)
+import Data.Aeson (FromJSON, ToJSON, (.:?), (.:), withObject, object, (.=), parseJSON, toJSON)
 import Data.Text (unpack)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime, UTCTime)
@@ -66,8 +66,11 @@ instance FromJSON TaskInput where
             (Nothing, Just var)  -> return $ VarInput var
             _ -> fail "TaskInput debe contener exactamente una clave 'file' o 'var'"
 
+instance ToJSON TaskInput where
+    toJSON (FileInput file) = object [Key.fromString "file" .= file]
+    toJSON (VarInput var)   = object [Key.fromString "var" .= var]
 
-instance ToJSON TaskInput
+
 
 data IdResponse = IdResponse { id :: Int }
     deriving (Generic, Show)
@@ -116,7 +119,8 @@ instance FromJSON FailStrategy
 instance ToJSON FailStrategy
 
 data ExecutionPlan = ExecutionPlan
-    { execCommand :: String
+    { taskName :: String
+    , execCommand :: String
     , execArgs    :: [TaskInput]
     , execOutput  :: TaskOutput
     }

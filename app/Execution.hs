@@ -7,8 +7,9 @@ import GHC.Generics (Generic)
 import Data.Aeson (FromJSON, withObject, Value(..), Object, (.:?), parseJSON, (.:), decode)
 import qualified Data.Aeson.KeyMap as KM
 import System.Process (readProcess)
-import System.FilePath (takeExtension, takeFileName)
+import System.FilePath (takeExtension, takeFileName, takeDrive, dropDrive, (</>))
 import System.Directory (doesFileExist, makeAbsolute)
+import System.Info (os)
 import Control.Exception (catch, SomeException)
 import Data.Text (unpack)
 import Types (Task(..), TaskInput(..), TaskOutput(..), ExecutionPlan(..))
@@ -20,9 +21,9 @@ import qualified Data.ByteString.Lazy.Char8 as B
 -- 🔹 Construye el ExecutionPlan a partir de una Task
 buildExecutionPlan :: Task -> [TaskInput] -> Maybe ExecutionPlan
 buildExecutionPlan task args =
-    case (command task, script task, taskToTaskOutput task) of
-        (Just cmd, Nothing, outFile) -> Just (ExecutionPlan cmd args outFile)
-        (Nothing, Just file, outFile) -> Just (ExecutionPlan file args outFile)
+    case (name task, command task, script task, taskToTaskOutput task) of
+        (taskName, Just cmd, Nothing, outFile) -> Just (ExecutionPlan taskName cmd args outFile)
+        (taskName, Nothing, Just file, outFile) -> Just (ExecutionPlan taskName file args outFile)
         _ -> Nothing
 
 executeScript :: Task -> [TaskInput] -> ExecutionMonad (Either String TaskOutput)
@@ -63,91 +64,89 @@ selectDockerImage cmd
     | takeExtension cmd == ".c"   = ("gcc:latest", "gcc")
     | otherwise                   = ("ubuntu:latest", "sh")
 
-convertToDockerPath :: String -> String
-convertToDockerPath (d:':':xs) = '/' : toLower d : map (\c -> if c == '\\' then '/' else c) xs
-convertToDockerPath path       = map (\c -> if c == '\\' then '/' else c) path
 
-getInputValue :: TaskInput -> String
-getInputValue (FileInput file) = "/app/" ++ takeFileName file  -- Ahora apunta correctamente al contenedor
-getInputValue (VarInput var)   = var
+convertToDockerPath :: FilePath -> IO FilePath
+convertToDockerPath path = do
+    absPath <- makeAbsolute path  -- Convierte la ruta en absoluta primero
+    return $ case os of
+        "mingw32" -> toDockerWindowsPath absPath
+        "cygwin"  -> toDockerWindowsPath absPath
+        _         -> absPath  -- En Linux/macOS no cambia
+
+-- Función auxiliar para Windows
+toDockerWindowsPath :: FilePath -> FilePath
+toDockerWindowsPath path =
+    let drive = map toLower (take 1 path)  -- Extrae la letra de unidad (Ej: "C")
+        rest  = drop 2 path  -- Quita "C:\" dejando solo "\Users\..."
+    in "/" ++ drive ++ map (\c -> if c == '\\' then '/' else c) rest  -- Convierte a "/c/Users/..."
+
+
+
 
 manageContainer :: ExecutionPlan -> ExecutionMonad (Either String TaskOutput)
 manageContainer plan = do
     let command = execCommand plan
     let (dockerImage, interpreter) = selectDockerImage command
 
-    if takeExtension command `elem` [".py", ".js", ".sh", ".c"]
-        then do
-            absoluteScriptPath <- liftIO $ makeAbsolute ("./tasks/" ++ command)
-            let dockerScriptPath = convertToDockerPath absoluteScriptPath  
+    -- Convertir rutas a absolutas y en formato Docker
+    absoluteScriptPath <- liftIO $ makeAbsolute ("tasks" </> command)
+    dockerScriptPath <- liftIO $ convertToDockerPath absoluteScriptPath  
+    let containerName = taskName plan
 
-            let inputs = execArgs plan 
+    let inputs = execArgs plan 
+    let fileInputs = [filePath | FileInput filePath <- inputs]
+    logMsg $ "fileInputs: " ++ show fileInputs
 
-            let fileInputs = [filePath | FileInput filePath <- inputs]
-            logMsg $ "fileInputs: " ++ show fileInputs
+    containerIdResult <- liftIO $ runCommand 
+        ["create", "--rm=false", "--name", containerName, "-v", dockerScriptPath ++ ":/app/" ++ takeFileName command, dockerImage, "sh", "-c", "sleep infinity"]
 
-            containerIdResult <- liftIO $ runCommand 
-                ["create", "--rm=false", "-v", dockerScriptPath ++ ":/app/" ++ command, dockerImage, "sh", "-c", "sleep infinity"]
+    case containerIdResult of
+        Left err -> do
+            logMsg $ "Error creando contenedor: " ++ err
+            return $ Left err
+        Right containerId -> do
+            logMsg $ "Contenedor creado con ID: " ++ containerId
 
-            case containerIdResult of
+            _ <- liftIO $ mapM (\file -> do
+                let cpCommand = ["cp", file, containerId ++ ":/app/" ++ takeFileName file]
+                liftIO $ putStrLn $ "Ejecutando: " ++ unwords cpCommand
+                runCommand cpCommand
+                ) fileInputs
+
+            -- 🔹 Paso 3: Iniciar el contenedor
+            _ <- liftIO $ runCommand ["start", containerId]
+            logMsg $ "Contenedor iniciado: " ++ containerId
+
+            -- 🔹 Paso 4: Ejecutar el script dentro del contenedor
+            let args = [getInputValue input | input <- inputs]
+            let scriptExecutionCmd = interpreter ++ " /app/" ++ takeFileName command ++ " " ++ unwords args
+            logMsg $ "Ejecutando script en contenedor: docker exec -i " ++ containerId ++ " sh -c " ++ show scriptExecutionCmd
+
+            execResult <- liftIO $ runCommand  ["exec", "-i", containerId, "sh", "-c", scriptExecutionCmd]
+
+            case execResult of
                 Left err -> do
-                    logMsg $ "Error creando contenedor: " ++ err
+                    logMsg $ "Error ejecutando script en contenedor: " ++ err
                     return $ Left err
-                Right containerId -> do
-                    logMsg $ "Contenedor creado con ID: " ++ containerId
+                Right logs -> do
+                    logMsg $ "Output del contenedor: " ++ logs
 
-                    -- 🔹 Paso 2: Copiar archivos al contenedor
-                    liftIO $ mapM_ (\file -> do
-                        let destFile = takeFileName file 
-                        runCommand ["cp", file, containerId ++ ":/app/" ++ destFile]) fileInputs
+                    -- 🔹 Paso 5: Capturar el resultado y procesarlo
+                    result <- processExecutionResult plan containerId logs
 
-                    -- 🔹 Paso 3: Iniciar el contenedor
-                    _ <- liftIO $ runCommand ["start", containerId]
-
-                    -- 🔹 Paso 4: Ejecutar el script dentro del contenedor
-                    let args = [getInputValue input | input <- inputs]
-                    -- let cleanArgs = map show args
-                    let scriptExecutionCmd = interpreter ++ " /app/" ++ command ++ " " ++ unwords args
-
-                    logMsg $ "Corriendo comando: docker exec " ++ containerId ++ " sh -c " ++ show scriptExecutionCmd
-
-                    execResult <- liftIO $ runCommand ["exec", containerId, "sh", "-c", scriptExecutionCmd]
-
-                    case execResult of
-                        Left err -> do
-                            logMsg $ "Error ejecutando script en contenedor: " ++ err
-                            return $ Left err
-                        Right _ -> do
-                            logMsg $ "Script ejecutado exitosamente en contenedor " ++ containerId
-
-                            -- 🔹 Capturar logs del contenedor
-                            logsResult <- liftIO $ runCommand ["logs", containerId]
-
-                            -- 🔹 Procesar resultado antes de eliminar el contenedor
-                            result <- processExecutionResult plan containerId logsResult
-
-                            -- 🔹 Eliminar el contenedor después de copiar los archivos
-                            -- _ <- liftIO $ runCommand ["rm", "-f", containerId]
-
-                            return result
-
-        else do
-            let containerArgs = ["run", "-d", "-v", convertToDockerPath "./tasks" ++ ":/tasks", dockerImage, "sh", "-c", command]
-
-            logMsg $ "Ejecutando comando en Docker: " ++ dockerImage ++ " " ++ unwords containerArgs
-            containerIdResult <- liftIO $ runCommand containerArgs
-
-            case containerIdResult of
-                Left err -> do
-                    logMsg $ "Error iniciando contenedor: " ++ err
-                    return $ Left err
-                Right containerId -> do
-                    logMsg $ "Contenedor iniciado con ID: " ++ containerId
-
-                    logsResult <- liftIO $ runCommand ["logs", containerId]
+                    -- 🔹 Paso 6: Eliminar el contenedor después de la ejecución (en caso de éxito)
                     _ <- liftIO $ runCommand ["rm", "-f", containerId]
+                    logMsg $ "Contenedor eliminado: " ++ containerId
 
-                    processExecutionResult plan containerId logsResult
+                    return result
+
+
+
+getInputValue :: TaskInput -> String
+getInputValue (FileInput file) = "/app/" ++ takeFileName file  -- Se pasa la ruta del archivo dentro del contenedor
+getInputValue (VarInput var)   = var  -- Se pasa directamente el valor si es una variable
+
+        
 
 extractJSONResult :: B.ByteString -> Maybe String
 extractJSONResult output = do 
@@ -171,38 +170,31 @@ buildTaskOutput :: Maybe String -> TaskOutput
 buildTaskOutput (Just output) = OutputFile output
 buildTaskOutput Nothing       = OutputValue ""
 
-processExecutionResult :: ExecutionPlan -> String -> Either String String -> ExecutionMonad (Either String TaskOutput)
-processExecutionResult plan containerId (Left err) = return $ Left err
-processExecutionResult plan containerId (Right logs) = do 
-    logMsg $ "logs del contenedor: " ++ logs
+
+processExecutionResult :: ExecutionPlan -> String -> String -> ExecutionMonad (Either String TaskOutput)
+processExecutionResult plan containerId logs = do 
+    logMsg $ "Procesando resultado: " ++ logs
     logMsg $ "ExecOutput: " ++ show (execOutput plan)
 
     case execOutput plan of
-        -- 🔹 Si el output es un archivo, copiarlo al host
+        -- 🔹 Si el output es un archivo, copiarlo del contenedor al host
         OutputFile filePath -> do
-            logMsg $ "Copiando archivo desde el contenedor: " ++ filePath
-            let hostPath = "./output/" ++ filePath  -- 🔹 Ruta donde queremos guardarlo en el host
+            logMsg $ "Copiando archivo de salida desde el contenedor: " ++ filePath
+            let hostPath = "./output/" ++ takeFileName filePath
+            let cpCommand = ["cp", containerId ++ ":/" ++ takeFileName filePath, hostPath]
+            logMsg $ "Archivo guardado en: " ++ hostPath
+            _ <- liftIO $ runCommand cpCommand
 
-            -- 🔹 Comando para copiar el archivo desde el contenedor específico al host
-            let cpCommand = ["cp", containerId ++ ":" ++ filePath, hostPath]
-            copyResult <- liftIO $ runCommand cpCommand
+            logMsg $ "Ejecutando: " ++ unwords cpCommand
 
-            logMsg $ "Ejecutando: " ++ unwords cpCommand  -- 🔹 Log para verificar qué se ejecuta
+            return $ Right (OutputFile hostPath)
 
-            case copyResult of
-                Left err -> return $ Left ("Error copiando archivo: " ++ err)
-                Right _  -> do
-                    logMsg "Éxito al copiar el archivo"
-                    return $ Right (OutputFile hostPath)
-
-        -- 🔹 Si es un OutputValue, asumimos que la salida es JSON y extraemos `x`
+        -- 🔹 Si es un resultado numérico, extraerlo del JSON
         OutputValue _ -> do
             logMsg "Procesando OutputValue"
             case extractJSONResult (B.pack logs) of
                 Just result -> return $ Right (OutputValue result)
-                Nothing     -> do
-                    logMsg "no"
-                    return $ Left "Error: la salida de la tarea no es un JSON válido con { result: x }"
+                Nothing     -> return $ Left "Error: la salida de la tarea no es un JSON válido con { result: x }"
 
 
 
