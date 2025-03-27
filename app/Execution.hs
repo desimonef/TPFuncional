@@ -6,8 +6,6 @@ module Execution (executeScript, executeWithRetries) where
 import GHC.Generics (Generic)
 
 import System.Process (readProcess)
-import System.FilePath (takeExtension, takeFileName, takeDrive, dropDrive, (</>))
-import System.Directory (doesFileExist, makeAbsolute)
 import System.Info (os)
 import Control.Exception (catch, SomeException)
 import Data.Text (unpack)
@@ -15,6 +13,8 @@ import Types (Task(..), TaskInput(..), TaskOutput(..), ExecutionPlan(..))
 import Monad(ExecutionMonad, getState, logMsg, updateState)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (toLower)
+import Filesystem (convertToDockerPath, makeAbsolutePath, joinPath, fileExists, takeExtension, takeFileName)
+
 
 import Serialization (decodeJSON, extractJSONResult)
 
@@ -65,14 +65,6 @@ selectDockerImage cmd
     | otherwise                   = ("ubuntu:latest", "sh")
 
 
-convertToDockerPath :: FilePath -> IO FilePath
-convertToDockerPath path = do
-    absPath <- makeAbsolute path  -- Convierte la ruta en absoluta primero
-    return $ case os of
-        "mingw32" -> toDockerWindowsPath absPath
-        "cygwin"  -> toDockerWindowsPath absPath
-        _         -> absPath  -- En Linux/macOS no cambia
-
 -- Función auxiliar para Windows
 toDockerWindowsPath :: FilePath -> FilePath
 toDockerWindowsPath path =
@@ -90,7 +82,7 @@ manageContainer plan = do
         then do
             let (dockerImage, interpreter) = selectDockerImage command
             -- Convertir rutas a absolutas y en formato Docker
-            absoluteScriptPath <- liftIO $ makeAbsolute ("tasks" </> command)
+            absoluteScriptPath <- liftIO $ makeAbsolutePath (joinPath "tasks" command)
             dockerScriptPath <- liftIO $ convertToDockerPath absoluteScriptPath  
             let containerName = taskName plan
 

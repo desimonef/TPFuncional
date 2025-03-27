@@ -5,7 +5,6 @@ module Workflows (executeWorkflow) where
 import GHC.Generics (Generic)
 import qualified Data.Set as S
 import qualified Data.Map as M
-import System.FilePath (takeExtension)
 import Control.Monad.State
 import Control.Monad.Writer
 import Control.Monad.IO.Class (liftIO)

@@ -15,18 +15,18 @@ import Network.Wai.Handler.Warp
 import Control.Monad.IO.Class (liftIO)
 import Monad (runDB)
 import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, updateExecutionStatus)
-import System.Directory (createDirectoryIfMissing)
 import GHC.Generics (Generic)
 import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..))
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Lazy as BL
-import System.FilePath ((</>))
 import Control.Monad (filterM)
 import Data.List ((\\))
 import Workflows (executeWorkflow)
 import Serialization (decodeJSON)
 import Data.Time.Clock (getCurrentTime)
+import Filesystem (createDirectoryIfMissingSafe, writeLazyFile, joinPath)
+
 
 type WorkflowAPI =
        "workflows" :> ReqBody '[JSON] Workflow :> Post '[JSON] IdResponse
@@ -80,17 +80,17 @@ server =
               Just (wid, name, def) -> return $ WorkflowResponse wid name def
               Nothing -> throwError err404 { errBody = "Workflow not found" }
 
-      addTask :: TaskUpload -> Handler IdResponse
       addTask (TaskUpload file) = do
-          let dir = "./tasks"  
-              fileName = T.unpack $ fdFileName file
-              filePath = dir </> fileName  
+        let dir = "./tasks"
+            fileName = T.unpack $ fdFileName file
+            filePath = joinPath dir fileName
 
-          liftIO $ do
-              createDirectoryIfMissing True dir  
-              BL.writeFile filePath (fdPayload file)  
+        liftIO $ do
+            createDirectoryIfMissingSafe dir
+            writeLazyFile filePath (fdPayload file)
 
-          IdResponse <$> liftIO (runDB (saveTask fileName)) 
+        IdResponse <$> liftIO (runDB (saveTask fileName))
+
 
       getTaskByIdAPI :: Int -> Handler (Int, String)
       getTaskByIdAPI tid = do
