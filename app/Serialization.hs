@@ -7,6 +7,7 @@ module Serialization
   , encodeJSONText
   , decodeJSONText
   , extractJSONResult
+  , jsonErrorBody
   ) where
 
 import Data.Aeson (ToJSON, FromJSON, encode, decode, parseJSON, withObject, (.:), (.:?), Value(..), Object)
@@ -34,6 +35,10 @@ encodeJSONText = TE.decodeUtf8 . BL.toStrict . encodeJSON
 -- Deserializar JSON desde `Text`
 decodeJSONText :: FromJSON a => T.Text -> Maybe a
 decodeJSONText = decodeJSON . BL.fromStrict . TE.encodeUtf8
+
+-- Convertir String a cuerpo de error HTTP (lazy ByteString)
+jsonErrorBody :: String -> BL.ByteString
+jsonErrorBody = BL.fromStrict . TE.encodeUtf8 . T.pack
 
 -- Extrae el resultado de un JSON con la clave "result"
 extractJSONResult :: String -> Maybe String

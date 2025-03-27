@@ -8,6 +8,7 @@ module Filesystem
   , convertToDockerPath
   , takeExtension
   , takeFileName
+  , textToFilePath
   ) where
 
 import System.Directory (createDirectoryIfMissing, doesFileExist, makeAbsolute)
@@ -15,6 +16,7 @@ import qualified Data.ByteString.Lazy as BL
 import System.FilePath ((</>), takeExtension, takeFileName)
 import System.Process (readProcess)
 import System.Info (os)
+import qualified Data.Text as T
 import Control.Exception (catch, SomeException)
 import Data.Char (toLower)
 
@@ -37,6 +39,11 @@ makeAbsolutePath = makeAbsolute
 -- Unir paths
 joinPath :: FilePath -> FilePath -> FilePath
 joinPath = (</>)
+
+-- Convierte nombres de archivos de Text a FilePath
+textToFilePath :: T.Text -> FilePath
+textToFilePath = T.unpack
+
 
 -- Convertir path para Docker (Windows/Linux)
 convertToDockerPath :: FilePath -> IO FilePath

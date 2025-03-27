@@ -17,15 +17,12 @@ import Monad (runDB)
 import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, updateExecutionStatus)
 import GHC.Generics (Generic)
 import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..))
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.ByteString.Lazy as BL
 import Control.Monad (filterM)
 import Data.List ((\\))
 import Workflows (executeWorkflow)
-import Serialization (decodeJSON)
+import Serialization (decodeJSONText, jsonErrorBody)
 import Data.Time.Clock (getCurrentTime)
-import Filesystem (createDirectoryIfMissingSafe, writeLazyFile, joinPath)
+import Filesystem (createDirectoryIfMissingSafe, writeLazyFile, joinPath, textToFilePath)
 
 
 type WorkflowAPI =
@@ -43,9 +40,7 @@ data TaskUpload = TaskUpload { taskFile :: FileData Mem }
   deriving (Generic)
 
 instance FromMultipart Mem TaskUpload where
-    fromMultipart form = case lookupFile "taskFile" form of
-        Right file -> Right (TaskUpload file)
-        Left err   -> Left err
+    fromMultipart form = TaskUpload <$> lookupFile "taskFile" form
 
 server :: Server WorkflowAPI
 server =
@@ -62,11 +57,11 @@ server =
       addWorkflow :: Workflow -> Handler IdResponse
       addWorkflow wf = do
           let scriptTasks = [script | Task { script = Just script } <- tasks wf]
-          existingTasks <- liftIO $ filterM (\s -> runDB (taskExists s)) scriptTasks
+          existingTasks <- liftIO $ filterM (runDB . taskExists) scriptTasks
           let missingTasks = scriptTasks \\ existingTasks
           if null missingTasks
               then IdResponse <$> liftIO (runDB (saveWorkflow wf))
-              else throwError err400 { errBody = BL.fromStrict (TE.encodeUtf8 (T.pack ("These script tasks are missing: " ++ show missingTasks))) }
+              else throwError err400 { errBody = jsonErrorBody ("These script tasks are missing: " ++ show missingTasks) }
 
       listWorkflows :: Handler [WorkflowResponse]
       listWorkflows = do
@@ -80,17 +75,13 @@ server =
               Just (wid, name, def) -> return $ WorkflowResponse wid name def
               Nothing -> throwError err404 { errBody = "Workflow not found" }
 
+      addTask :: TaskUpload -> Handler IdResponse
       addTask (TaskUpload file) = do
-        let dir = "./tasks"
-            fileName = T.unpack $ fdFileName file
-            filePath = joinPath dir fileName
-
-        liftIO $ do
-            createDirectoryIfMissingSafe dir
-            writeLazyFile filePath (fdPayload file)
-
-        IdResponse <$> liftIO (runDB (saveTask fileName))
-
+          let fileName = fdFileName file
+          liftIO $ do
+              createDirectoryIfMissingSafe "./tasks"
+              writeLazyFile (joinPath "./tasks" (textToFilePath fileName)) (fdPayload file)
+          IdResponse <$> liftIO (runDB (saveTask (textToFilePath fileName)))
 
       getTaskByIdAPI :: Int -> Handler (Int, String)
       getTaskByIdAPI tid = do
@@ -106,7 +97,7 @@ server =
       executeWorkflowAPI wid = do
           result <- liftIO $ runDB (getWorkflowById wid)
           case result of
-              Just (_, _, def) -> case decodeJSON (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe Workflow of
+              Just (_, _, def) -> case decodeJSONText def :: Maybe Workflow of
                   Just workflow -> do
                       timestamp <- liftIO getCurrentTime
                       execId <- liftIO $ runDB (saveExecution wid timestamp)
