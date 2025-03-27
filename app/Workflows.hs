@@ -17,11 +17,11 @@ import Types (Workflow(..), Task(..), TaskNode(..), TaskInput(..), TaskOutput(..
 import Monad(ExecutionState, ExecutionMonad, logMsg, updateState, getState)
 
 
-executeWorkflow :: DB -> Workflow -> IO Bool
-executeWorkflow db (Workflow _ tasks) = do
+executeWorkflow :: Workflow -> IO Bool
+executeWorkflow (Workflow _ tasks) = do
     let graph = buildTaskGraph tasks
     let order = topologicalSort graph
-    (result, logOutput) <- runWriterT (evalStateT (executeWithGraph db order) [])
+    (result, logOutput) <- runWriterT (evalStateT (executeWithGraph order) [])
     
     -- Imprimir el log de ejecución
     putStrLn "=== Execution Log ==="
@@ -30,11 +30,11 @@ executeWorkflow db (Workflow _ tasks) = do
     return result
 
 
-executeWithGraph :: DB -> [TaskNode] -> ExecutionMonad Bool
-executeWithGraph _ [] = do
+executeWithGraph :: [TaskNode] -> ExecutionMonad Bool
+executeWithGraph [] = do
     logMsg "Workflow completado!"
     return True
-executeWithGraph db (node:rest) = do
+executeWithGraph (node:rest) = do
     state <- getState
     let t = task node
     let retries = maybe 0 maxRetries (retryPolicy t)
@@ -49,11 +49,11 @@ executeWithGraph db (node:rest) = do
                 FailWorkflow -> do
                     logMsg "Finalizando workflow debido a un fallo no recuperable."
                     return False
-                ContinueWorkflow -> executeWithGraph db rest
+                ContinueWorkflow -> executeWithGraph rest
         Right taskOutput -> do
             updateState (taskName node) taskOutput
             logMsg $ "Tarea " ++ taskName node ++ " finalizada con salida: " ++ show taskOutput
-            executeWithGraph db rest
+            executeWithGraph rest
 
 
 resolveInputs :: Task -> ExecutionState -> [TaskInput]

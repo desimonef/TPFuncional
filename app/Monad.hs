@@ -1,9 +1,23 @@
-module Monad(ExecutionState, ExecutionMonad, logMsg, updateState, getState) where
+module Monad(ExecutionState, ExecutionMonad, DatabaseMonad, logMsg, updateState, getState, runDB) where
 
 import Control.Monad.State
 import Control.Monad.Writer
 import Control.Monad.IO.Class
 import Types(TaskOutput)
+import Control.Monad.Reader
+import Database.SQLite.Simple
+import Control.Monad.IO.Class (MonadIO)
+
+-- | Tipo de la mónada de base de datos
+type DatabaseMonad = ReaderT Connection IO
+
+-- | Ejecuta una acción en DatabaseM manejando la conexión automáticamente
+runDB :: DatabaseMonad a -> IO a
+runDB action = do
+  conn <- open "workflows.db"
+  result <- runReaderT action conn
+  close conn
+  return result
 
 -- Tipo para los logs de ejecución
 type ExecutionLog = [String]
