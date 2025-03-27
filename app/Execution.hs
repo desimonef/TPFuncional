@@ -4,8 +4,7 @@
 module Execution (executeScript, executeWithRetries) where
 
 import GHC.Generics (Generic)
-import Data.Aeson (FromJSON, withObject, Value(..), Object, (.:?), parseJSON, (.:), decode)
-import qualified Data.Aeson.KeyMap as KM
+
 import System.Process (readProcess)
 import System.FilePath (takeExtension, takeFileName, takeDrive, dropDrive, (</>))
 import System.Directory (doesFileExist, makeAbsolute)
@@ -16,7 +15,8 @@ import Types (Task(..), TaskInput(..), TaskOutput(..), ExecutionPlan(..))
 import Monad(ExecutionMonad, getState, logMsg, updateState)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (toLower)
-import qualified Data.ByteString.Lazy.Char8 as B
+
+import Serialization (decodeJSON, extractJSONResult)
 
 -- 🔹 Construye el ExecutionPlan a partir de una Task
 buildExecutionPlan :: Task -> [TaskInput] -> Maybe ExecutionPlan
@@ -170,23 +170,7 @@ getInputValue :: TaskInput -> String
 getInputValue (FileInput file) = "/app/" ++ takeFileName file  -- Se pasa la ruta del archivo dentro del contenedor
 getInputValue (VarInput var)   = var  -- Se pasa directamente el valor si es una variable
 
-        
 
-extractJSONResult :: B.ByteString -> Maybe String
-extractJSONResult output = do 
-    jsonObject <- decode output :: Maybe Object
-    value <- KM.lookup "result" jsonObject  -- Uso correcto de KeyMap.lookup
-    pure (valueToString value)
-
-
-valueToString :: Value -> String
-valueToString (String s)  = unpack s
-valueToString (Number n)  = show n
-valueToString (Bool b)    = show b
-valueToString Null        = "null"
-valueToString (Array a)   = show a
-valueToString (Object o)  = show o
-    
 taskToTaskOutput :: Task -> TaskOutput
 taskToTaskOutput task = buildTaskOutput (output task)
 
@@ -201,22 +185,17 @@ processExecutionResult plan containerId logs = do
     logMsg $ "ExecOutput: " ++ show (execOutput plan)
 
     case execOutput plan of
-        -- 🔹 Si el output es un archivo, copiarlo del contenedor al host
         OutputFile filePath -> do
             logMsg $ "Copiando archivo de salida desde el contenedor: " ++ filePath
             let hostPath = "./output/" ++ takeFileName filePath
             let cpCommand = ["docker", "cp", containerId ++ ":/" ++ takeFileName filePath, hostPath]
             logMsg $ "Archivo guardado en: " ++ hostPath
             _ <- liftIO $ runCommand cpCommand
-
-            logMsg $ "Ejecutando: " ++ unwords cpCommand
-
             return $ Right (OutputFile hostPath)
 
-        -- 🔹 Si es un resultado numérico, extraerlo del JSON
         OutputValue _ -> do
             logMsg "Procesando OutputValue"
-            case extractJSONResult (B.pack logs) of
+            case extractJSONResult logs of
                 Just result -> return $ Right (OutputValue result)
                 Nothing     -> return $ Left "Error: la salida de la tarea no es un JSON válido con { result: x }"
 

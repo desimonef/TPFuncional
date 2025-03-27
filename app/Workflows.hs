@@ -3,7 +3,6 @@
 module Workflows (executeWorkflow) where
 
 import GHC.Generics (Generic)
-import Data.Aeson (FromJSON)
 import qualified Data.Set as S
 import qualified Data.Map as M
 import System.FilePath (takeExtension)

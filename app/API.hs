@@ -13,7 +13,7 @@ import Servant
 import Servant.Multipart
 import Network.Wai.Handler.Warp
 import Control.Monad.IO.Class (liftIO)
-import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, updateExecutionStatus)
+import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, updateExecutionStatus)
 import System.Directory (createDirectoryIfMissing)
 import GHC.Generics (Generic)
 import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..))
@@ -23,16 +23,15 @@ import qualified Data.ByteString.Lazy as BL
 import System.FilePath ((</>))
 import Control.Monad (filterM)
 import Data.List ((\\))
-import Workflows(executeWorkflow)
-import Data.Aeson(decode)
-import Data.Time.Clock (getCurrentTime, UTCTime)
+import Workflows (executeWorkflow)
+import Serialization (encodeJSON, decodeJSON)
+import Data.Time.Clock (getCurrentTime)
 
 -- Definición de la API con respuestas HTTP adecuadas
 type WorkflowAPI =
        "workflows" :> ReqBody '[JSON] Workflow :> Post '[JSON] IdResponse
   :<|> "workflows" :> Get '[JSON] [WorkflowResponse]
   :<|> "workflows" :> Capture "id" Int :> Get '[JSON] WorkflowResponse
-  :<|> "workflows" :> QueryParam "name" String :> Get '[JSON] (Int, Workflow)
   :<|> "tasks" :> MultipartForm Mem TaskUpload :> Post '[JSON] IdResponse
   :<|> "tasks" :> Capture "id" Int :> Get '[JSON] (Int, String)
   :<|> "tasks" :> Get '[JSON] [(Int, String)]
@@ -55,7 +54,6 @@ server db =
        addWorkflow
   :<|> listWorkflows
   :<|> getWorkflowByIdAPI
-  :<|> getWorkflowByNameAPI
   :<|> addTask
   :<|> getTaskByIdAPI
   :<|> listTasks
@@ -84,15 +82,6 @@ server db =
               Just (wid, name, def) -> return $ WorkflowResponse wid name def
               Nothing -> throwError err404 { errBody = "Workflow not found" }
 
-
-      getWorkflowByNameAPI :: Maybe String -> Handler (Int, Workflow)
-      getWorkflowByNameAPI (Just name) = do
-          result <- liftIO $ getWorkflowByName db name
-          case result of
-              Just wf -> return wf
-              Nothing -> throwError err404 { errBody = "Workflow not found" }
-      getWorkflowByNameAPI Nothing = throwError err400 { errBody = "Workflow name is required" }
-
       addTask :: TaskUpload -> Handler IdResponse
       addTask (TaskUpload file) = do
           let dir = "./tasks"  
@@ -117,29 +106,28 @@ server db =
 
       executeWorkflowAPI :: Int -> Handler ExecutionResponse
       executeWorkflowAPI wid = do
-          result <- liftIO $ getWorkflowById db wid
-          case result of
-              Just (_, _, def) -> case decode (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe Workflow of
-                  Just workflow -> do
-                    -- Guardar ejecución con estado "started"
-                      timestamp <- liftIO getCurrentTime
-                      execId <- liftIO $ saveExecution db wid timestamp
+            result <- liftIO $ getWorkflowById db wid
+            case result of
+                Just (_, _, def) -> case decodeJSON (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe Workflow of
+                    Just workflow -> do
+                        -- Guardar ejecución con estado "started"
+                        timestamp <- liftIO getCurrentTime
+                        execId <- liftIO $ saveExecution db wid timestamp
 
-                    -- Ejecutar el workflow y obtener si fue exitoso o falló
-                      success <- liftIO $ executeWorkflow db workflow
-                    
-                    -- Determinar el estado final
-                      let finalStatus = if success then "completed" else "failed"
-                    
-                    -- Actualizar el estado en la BD
-                      liftIO $ updateExecutionStatus db execId finalStatus
+                        -- Ejecutar el workflow y obtener si fue exitoso o falló
+                        success <- liftIO $ executeWorkflow db workflow
 
-                    -- Responder a la API
-                      if success
-                          then return $ ExecutionResponse "Execution completed"
-                          else throwError err500 { errBody = "Workflow execution failed" }
-                  Nothing -> throwError err400 { errBody = "Invalid workflow format" }
-              Nothing -> throwError err404 { errBody = "Workflow not found" }
+                        -- Determinar el estado final
+                        let finalStatus = if success then "completed" else "failed"
+
+                        -- Actualizar el estado en la BD
+                        liftIO $ updateExecutionStatus db execId finalStatus
+
+                        -- Responder a la API
+                        return $ ExecutionResponse (if success then "Execution completed" else "Execution failed")
+                    Nothing -> throwError err400 { errBody = "Invalid workflow format" }
+                Nothing -> throwError err404 { errBody = "Workflow not found" }
+
 
 
       getExecutionsByWorkflowAPI :: Int -> Handler [ExecutionRecord]
