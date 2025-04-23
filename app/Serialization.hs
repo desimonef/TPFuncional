@@ -6,47 +6,36 @@ module Serialization
   , decodeJSON
   , encodeJSONText
   , decodeJSONText
-  , extractJSONResult
   , jsonErrorBody
   ) where
 
-import Data.Aeson (ToJSON, FromJSON, encode, decode, parseJSON, withObject, (.:), (.:?), Value(..), Object)
-import qualified Data.Aeson.KeyMap as KM
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as B
+import Data.Aeson (ToJSON(..), FromJSON, encode, decode, parseJSON, withObject, object, (.=), (.:?), Value(..), Object)
+import Data.ByteString.Lazy (ByteString, fromStrict, toStrict)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
+import Data.Text.Encoding (encodeUtf8, decodeUtf8)
+
 import Types (Workflow(..), Task(..), TaskInput(..), TaskOutput(..), IdResponse(..),
               WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..),
-              RetryPolicy(..), FailStrategy(..))
+              RetryPolicy(..), FailStrategy(..), WorkflowPatch(..))
 
--- Serializar a JSON
-encodeJSON :: ToJSON a => a -> BL.ByteString
+encodeJSON :: ToJSON a => a -> ByteString
 encodeJSON = encode
 
 -- Deserializar desde JSON
-decodeJSON :: FromJSON a => BL.ByteString -> Maybe a
+decodeJSON :: FromJSON a => ByteString -> Maybe a
 decodeJSON = decode
 
 -- Serializar JSON en formato `Text` para bases de datos
 encodeJSONText :: ToJSON a => a -> T.Text
-encodeJSONText = TE.decodeUtf8 . BL.toStrict . encodeJSON
+encodeJSONText = decodeUtf8 . toStrict . encodeJSON
 
 -- Deserializar JSON desde `Text`
 decodeJSONText :: FromJSON a => T.Text -> Maybe a
-decodeJSONText = decodeJSON . BL.fromStrict . TE.encodeUtf8
+decodeJSONText = decodeJSON . fromStrict . encodeUtf8
 
 -- Convertir String a cuerpo de error HTTP (lazy ByteString)
-jsonErrorBody :: String -> BL.ByteString
-jsonErrorBody = BL.fromStrict . TE.encodeUtf8 . T.pack
-
--- Extrae el resultado de un JSON con la clave "result"
-extractJSONResult :: String -> Maybe String
-extractJSONResult output = do
-    let jsonBytes = B.pack output 
-    jsonObject <- decodeJSON jsonBytes :: Maybe Object
-    value <- KM.lookup "result" jsonObject
-    pure (valueToString value)
+jsonErrorBody :: String -> ByteString
+jsonErrorBody = fromStrict . encodeUtf8 . T.pack
 
 -- Convierte un valor JSON a String
 valueToString :: Value -> String
@@ -64,7 +53,10 @@ instance FromJSON Workflow
 instance ToJSON Task
 instance FromJSON Task
 
-instance ToJSON TaskInput
+instance ToJSON TaskInput where
+    toJSON (FileInput f) = object ["file" .= f]
+    toJSON (VarInput v)  = object ["var" .= v]
+
 instance FromJSON TaskInput where
     parseJSON = withObject "TaskInput" $ \o -> do
         mFile <- o .:? "file"
@@ -94,3 +86,5 @@ instance FromJSON RetryPolicy
 
 instance ToJSON FailStrategy
 instance FromJSON FailStrategy
+
+instance FromJSON WorkflowPatch

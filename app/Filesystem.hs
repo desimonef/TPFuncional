@@ -9,43 +9,34 @@ module Filesystem
   , takeExtension
   , takeFileName
   , textToFilePath
+  , resolveInputPath
   ) where
 
 import System.Directory (createDirectoryIfMissing, doesFileExist, makeAbsolute)
 import qualified Data.ByteString.Lazy as BL
 import System.FilePath ((</>), takeExtension, takeFileName)
-import System.Process (readProcess)
 import System.Info (os)
 import qualified Data.Text as T
-import Control.Exception (catch, SomeException)
 import Data.Char (toLower)
 
--- Crear directorio si no existe
 createDirectoryIfMissingSafe :: FilePath -> IO ()
 createDirectoryIfMissingSafe = createDirectoryIfMissing True
 
--- Escribir archivo lazy
 writeLazyFile :: FilePath -> BL.ByteString -> IO ()
 writeLazyFile = BL.writeFile
 
--- Verifica existencia de archivo
 fileExists :: FilePath -> IO Bool
 fileExists = doesFileExist
 
--- Ruta absoluta
 makeAbsolutePath :: FilePath -> IO FilePath
 makeAbsolutePath = makeAbsolute
 
--- Unir paths
 joinPath :: FilePath -> FilePath -> FilePath
 joinPath = (</>)
 
--- Convierte nombres de archivos de Text a FilePath
 textToFilePath :: T.Text -> FilePath
 textToFilePath = T.unpack
 
-
--- Convertir path para Docker (Windows/Linux)
 convertToDockerPath :: FilePath -> IO FilePath
 convertToDockerPath path = do
   absPath <- makeAbsolutePath path
@@ -59,3 +50,10 @@ toDockerWindowsPath path =
   let drive = map toLower (take 1 path)
       rest  = drop 2 path
   in "/" ++ drive ++ map (\c -> if c == '\\' then '/' else c) rest
+
+resolveInputPath :: FilePath -> IO FilePath
+resolveInputPath path = do
+  exists <- fileExists path
+  if exists
+    then return path
+    else error $ "Archivo no encontrado: " ++ path

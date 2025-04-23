@@ -1,39 +1,53 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Graph(buildTaskGraph, topologicalSort, taskName) where
+module Graph (topologicalSort, taskName, detectCycles) where
 
-import Types (Workflow(..), Task(..), TaskNode(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..))
+import Types (Task(..), TaskNode(..), TaskGraph(..))
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe, mapMaybe)
+import Control.Monad (foldM)
 
 buildTaskGraph :: [Task] -> TaskGraph
-buildTaskGraph tasks =
-    let adjacencyList = [(name t, depends_on t) | t <- tasks]
-        taskNodes = [(name t, TaskNode t []) | t <- tasks]
-        populatedNodes = map (\(n, node) -> (n, populateDependencies node adjacencyList taskNodes)) taskNodes
-    in TaskGraph populatedNodes
+buildTaskGraph ts =
+  let adjacency = [(name t, depends_on t) | t <- ts]
+      nodes = [(name t, TaskNode t []) | t <- ts]
+      complete = map (\(n, node) -> (n, populateDependencies node adjacency nodes)) nodes
+  in TaskGraph complete
 
 populateDependencies :: TaskNode -> [(String, [String])] -> [(String, TaskNode)] -> TaskNode
-populateDependencies node adjacency taskNodes =
-    let taskMap = M.fromList taskNodes
-        depNames = fromMaybe [] (lookup (name . task $ node) adjacency)
-        depNodes = mapMaybe (`M.lookup` taskMap) depNames
-    in node { dependencies = depNodes }
-
-topologicalSort :: TaskGraph -> [TaskNode]
-topologicalSort (TaskGraph taskMap) = dfsAll (map snd taskMap) []
-
-dfsAll :: [TaskNode] -> [TaskNode] -> [TaskNode]
-dfsAll [] visited = visited
-dfsAll (node:rest) visited
-    | taskName node `elem` map taskName visited = dfsAll rest visited
-    | otherwise = dfsAll rest (dfs (dependencies node) visited ++ [node])
-
-dfs :: [TaskNode] -> [TaskNode] -> [TaskNode]
-dfs [] visited = visited
-dfs (x:xs) visited
-    | taskName x `elem` map taskName visited = dfs xs visited
-    | otherwise = dfs xs (x : visited)
+populateDependencies node adj allNodes =
+  let depNames = fromMaybe [] (lookup (name . task $ node) adj)
+      nodeMap = M.fromList allNodes
+      deps = mapMaybe (`M.lookup` nodeMap) depNames
+  in node { dependencies = deps }
 
 taskName :: TaskNode -> String
 taskName = name . task
+
+topologicalSort :: [Task] -> Either String [TaskNode]
+topologicalSort ts =
+  let TaskGraph nodeMap = buildTaskGraph ts
+      nodes = map snd nodeMap
+  in dfsAll nodes [] []
+
+dfsAll :: [TaskNode] -> [TaskNode] -> [String] -> Either String [TaskNode]
+dfsAll [] sorted _ = Right sorted
+dfsAll (n:ns) sorted visited =
+  if taskName n elem visited
+    then dfsAll ns sorted visited
+    else do
+      (visited', sorted') <- dfs n visited sorted []
+      dfsAll ns sorted' visited'
+
+dfs :: TaskNode -> [String] -> [TaskNode] -> [String] -> Either String ([String], [TaskNode])
+dfs node visited sorted recStack
+  | current elem recStack = Left $ "Ciclo detectado en la tarea: " ++ current
+  | current elem visited  = Right (visited, sorted)
+  | otherwise = do
+      (visited', sorted') <- foldM
+        (\(vAcc, sAcc) dep -> dfs dep vAcc sAcc (current : recStack))
+        (visited, sorted)
+        (dependencies node)
+      Right (current : visited', node : sorted')
+  where
+    current = taskName node

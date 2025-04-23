@@ -6,4 +6,6 @@ module Main where
 import API (runServer)
 
 main :: IO ()
-main = runServer
+main = do
+    putStrLn "Bienvenido!"
+    runServer

@@ -1,4 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use newtype instead of data" #-}
 
 module Types 
   ( Workflow(..)
@@ -14,13 +16,13 @@ module Types
   , RetryPolicy(..)
   , FailStrategy(..)
   , ExecutionPlan(..)
+  , WorkflowPatch(..)
   ) where
 
 import GHC.Generics (Generic)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 
--- Definición del workflow
 data Workflow = Workflow {
     workflow_name :: String,
     tasks :: [Task]
@@ -46,7 +48,7 @@ data TaskGraph = TaskGraph {
 } deriving (Show)
 
 data TaskInput = FileInput String | VarInput String
-    deriving (Show, Eq, Generic)
+    deriving (Show, Eq)
 
 data TaskOutput = OutputFile String | OutputValue String
     deriving (Show, Eq, Generic)
@@ -61,7 +63,8 @@ data WorkflowResponse = WorkflowResponse
   } deriving (Generic, Show)
 
 data ExecutionResponse = ExecutionResponse
-  { executionStatus :: Text
+  { success :: Bool
+  , logs    :: [String]
   } deriving (Generic, Show)
 
 data ExecutionRecord = ExecutionRecord
@@ -74,14 +77,24 @@ data ExecutionRecord = ExecutionRecord
 data RetryPolicy = RetryPolicy {
     maxRetries :: Int,
     failStrategy :: FailStrategy
-} deriving (Show, Generic)
+} deriving (Show, Generic, Eq)
 
 data FailStrategy = FailWorkflow | ContinueWorkflow
-    deriving (Show, Generic)
+    deriving (Show, Generic, Eq)
 
 data ExecutionPlan = ExecutionPlan
-    { taskName :: String
-    , execCommand :: String
-    , execArgs    :: [TaskInput]
-    , execOutput  :: TaskOutput
-    }
+  { planTaskName     :: String
+  , planCommand      :: String
+  , planArgs         :: [TaskInput]
+  , planOutput       :: TaskOutput
+  , planRetries      :: Int
+  , planFailStrategy :: FailStrategy
+  } deriving (Show)
+
+data WorkflowPatch = WorkflowPatch {
+    newName :: Maybe String,
+    newDefinition :: Maybe Workflow
+} deriving (Show, Generic)
+
+
+

@@ -1,74 +1,41 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Workflows (executeWorkflow) where
+module Workflows (executeWorkflow, buildPlans) where
 
-import GHC.Generics (Generic)
-import qualified Data.Set as S
-import qualified Data.Map as M
-import Control.Monad.State
-import Control.Monad.Writer
-import Control.Monad.IO.Class (liftIO)
-import Data.Maybe (fromMaybe, mapMaybe)
-import Database (DB)
-import Execution (executeScript, executeWithRetries)
-import Graph(buildTaskGraph, topologicalSort, taskName)
-import Types (Workflow(..), Task(..), TaskNode(..), TaskInput(..), TaskOutput(..), TaskGraph(..), RetryPolicy(..), FailStrategy(..))
-import Monad(ExecutionState, ExecutionMonad, logMsg, updateState, getState)
+import Graph (topologicalSort)
+import Types
+  ( Workflow(..), Task(..), TaskNode(..)
+  , TaskInput(..), TaskOutput(..), RetryPolicy(..)
+  , FailStrategy(..), ExecutionPlan(..)
+  )
+import Control.Applicative ((<|>))
 
+executeWorkflow :: Workflow -> Either String [ExecutionPlan]
+executeWorkflow (Workflow _ ts) =
+  case topologicalSort ts of
+    Left err -> Left err
+    Right ordered ->
+      let (plans, success) = buildPlans ordered []
+      in if success then Right plans else Left "Faltan comandos o scripts en una o más tareas."
 
-executeWorkflow :: Workflow -> IO Bool
-executeWorkflow (Workflow _ tasks) = do
-    let graph = buildTaskGraph tasks
-    let order = topologicalSort graph
-    (result, logOutput) <- runWriterT (evalStateT (executeWithGraph order) [])
-    
-    -- Imprimir el log de ejecución
-    putStrLn "=== Execution Log ==="
-    mapM_ putStrLn logOutput
+buildPlans :: [TaskNode] -> [(String, TaskOutput)] -> ([ExecutionPlan], Bool)
+buildPlans [] _ = ([], True)
+buildPlans (tn:rest) state =
+  let t = task tn
+      unresolved = input t
+  in case command t <|> script t of
+      Nothing -> ([], False)
+      Just cmd ->
+        let out = taskToTaskOutput t
+            (retries, strategy) = extractRetryPolicy (retryPolicy t)
+            plan = ExecutionPlan (name t) cmd unresolved out retries strategy
+            newState = (name t, out) : state
+            (restPlans, ok) = buildPlans rest newState
+        in (plan : restPlans, ok)
 
-    return result
+extractRetryPolicy :: Maybe RetryPolicy -> (Int, FailStrategy)
+extractRetryPolicy (Just (RetryPolicy n strat)) = (n, strat)
+extractRetryPolicy Nothing = (0, FailWorkflow)
 
-
-executeWithGraph :: [TaskNode] -> ExecutionMonad Bool
-executeWithGraph [] = do
-    logMsg "Workflow completado!"
-    return True
-executeWithGraph (node:rest) = do
-    state <- getState
-    let t = task node
-    let retries = maybe 0 maxRetries (retryPolicy t)
-    let strategy = maybe FailWorkflow failStrategy (retryPolicy t)
-
-    result <- executeWithRetries t (resolveInputs t state) retries
-
-    case result of
-        Left err -> do
-            logMsg $ "Fallo en la tarea: " ++ taskName node
-            case strategy of
-                FailWorkflow -> do
-                    logMsg "Finalizando workflow debido a un fallo no recuperable."
-                    return False
-                ContinueWorkflow -> executeWithGraph rest
-        Right taskOutput -> do
-            updateState (taskName node) taskOutput
-            logMsg $ "Tarea " ++ taskName node ++ " finalizada con salida: " ++ show taskOutput
-            executeWithGraph rest
-
-
-resolveInputs :: Task -> ExecutionState -> [TaskInput]
-resolveInputs task state = map resolveInput (input task)
-  where
-    resolveInput :: TaskInput -> TaskInput
-    resolveInput (VarInput ('@':taskName)) = 
-        case lookup taskName state of
-            Just (OutputValue value) -> VarInput value  -- Si la tarea generó un valor, lo usamos como VarInput
-            Just (OutputFile _)      -> error $ "Error: Se esperaba un valor, pero el output de " ++ taskName ++ " es un archivo."
-            Nothing                  -> error $ "Referencia a tarea desconocida: " ++ taskName
-
-    resolveInput (FileInput ('@':taskName)) =
-        case lookup taskName state of
-            Just (OutputFile filePath) -> FileInput filePath  -- Si la tarea generó un archivo, lo usamos como FileInput
-            Just (OutputValue _)       -> error $ "Error: Se esperaba un archivo, pero el output de " ++ taskName ++ " es un valor."
-            Nothing                    -> error $ "Referencia a tarea desconocida: " ++ taskName
-
-    resolveInput ti = ti  -- Si no es una referencia a otra tarea, lo deja igual
+taskToTaskOutput :: Task -> TaskOutput
+taskToTaskOutput t = maybe (OutputValue "") OutputFile (output t)
