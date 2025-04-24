@@ -21,3 +21,5 @@ Para compilar y ejecutar el sistema, se requiere:
 - [GHC](https://www.haskell.org/ghc/) (Glasgow Haskell Compiler), versión 9.x recomendada
 - [Cabal](https://www.haskell.org/cabal/) (sistema de construcción de proyectos Haskell)
 - [Docker](https://www.docker.com/) (para la ejecución de tareas en contenedores)
+
+Nota: en la carpeta scripts se tienen workflows y tasks de ejemplo para probar.
