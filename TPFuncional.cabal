@@ -73,7 +73,7 @@ executable TPFuncional
 
     -- Other library packages from which modules are imported.
     build-depends:    base ^>=4.17.2.1, aeson, bytestring, process, containers, filepath, directory, mtl,
-               async, fast-logger, sqlite-simple, text, servant, servant-server, servant-client, warp, wai, servant-multipart
+               async, fast-logger, sqlite-simple, text, servant, servant-server, servant-client, warp, wai, servant-multipart, time
 
     -- Directories containing source files.
     hs-source-dirs:   app
