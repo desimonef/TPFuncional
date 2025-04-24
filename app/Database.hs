@@ -13,11 +13,9 @@ module Database
   , saveExecution
   , getExecutionsByWorkflow
   , getAllExecutions
-  , updateExecutionStatus
   , workflowNameExists
   , deleteWorkflow
   , replaceTaskContent
-  , getOutputsByWorkflow
   , initDB
   ) where
 
@@ -107,11 +105,6 @@ saveExecution wid timestamp = do
         execute conn "INSERT INTO executions (workflow_id, timestamp, status) VALUES (?, ?, 'started')" (wid, timestamp)
         fromIntegral <$> lastInsertRowId conn
 
-updateExecutionStatus :: Int -> String -> DatabaseMonad ()
-updateExecutionStatus execId newStatus = do
-    conn <- ask
-    liftIO $ execute conn "UPDATE executions SET status = ? WHERE id = ?" (newStatus, execId)
-
 getExecutionsByWorkflow :: Int -> DatabaseMonad [(Int, Int, UTCTime, String)]
 getExecutionsByWorkflow wid = do
     conn <- ask
@@ -140,13 +133,6 @@ replaceTaskContent :: String -> BL.ByteString -> DatabaseMonad ()
 replaceTaskContent name newContent = do
   conn <- ask
   liftIO $ execute conn "UPDATE tasks SET content = ? WHERE name = ?" (newContent, name)
-
-getOutputsByWorkflow :: Int -> DatabaseMonad [(Int, Int, String, FilePath, UTCTime)]
-getOutputsByWorkflow wfId = do
-  conn <- ask
-  liftIO $ query conn "SELECT id, task_name, file_path, workflow_id FROM outputs WHERE workflow_id = ? ORDER BY timestamp DESC" (Only wfId)
-
-
 
 initDB :: IO ()
 initDB = do
