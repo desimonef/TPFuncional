@@ -1,0 +1,22 @@
+{
+    "workflow_name": "fallo_pero_sigo",
+    "tasks": [
+      {
+        "name": "fallar",
+        "command": "bash -c 'exit 1'",
+        "input": [],
+        "output": null,
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "ContinueWorkflow" }
+      },
+      {
+        "name": "siguiente",
+        "command": "echo 'me ejecuto igual'",
+        "input": [],
+        "output": null,
+        "depends_on": ["fallar"],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }
+  

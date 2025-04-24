@@ -1,0 +1,30 @@
+{
+    "workflow_name": "dependencias",
+    "tasks": [
+      {
+        "name": "a1",
+        "command": "echo 3",
+        "input": [],
+        "output": null,
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "FailWorkflow" }
+      },
+      {
+        "name": "b1",
+        "command": "echo 5",
+        "input": [],
+        "output": null,
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "FailWorkflow" }
+      },
+      {
+        "name": "suma",
+        "script": "sum.py",
+        "input": [ { "var": "@a1" }, { "var": "@b1" } ],
+        "output": null,
+        "depends_on": ["a1", "b1"],
+        "retryPolicy": { "maxRetries": 1, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }
+  

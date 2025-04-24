@@ -1,0 +1,14 @@
+{
+    "workflow_name": "archivo_output",
+    "tasks": [
+      {
+        "name": "crear_archivo",
+        "command": "echo Hello > archivo.txt",
+        "input": [],
+        "output": "archivo.txt",
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }
+  

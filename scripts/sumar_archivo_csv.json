@@ -1,0 +1,22 @@
+{
+    "workflow_name": "sumar_archivo_csv",
+    "tasks": [
+  
+      {
+        "name": "sumar",
+        "script": "sumar_archivo.py",
+        "input": [ { "file": "@descargar" } ],
+        "depends_on": ["descargar"],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "ContinueWorkflow" }
+      },
+          {
+        "name": "descargar",
+        "script": "descargar_datos.py",
+        "input": [],
+        "output": "datos.csv",
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 1, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }
+  

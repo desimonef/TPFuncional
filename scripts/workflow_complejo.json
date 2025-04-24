@@ -1,0 +1,38 @@
+{
+    "workflow_name": "procesamiento_complejo_final",
+    "tasks": [
+      {
+        "name": "descargar",
+        "script": "descargar_datos.py",
+        "input": [],
+        "output": "datos.csv",
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 1, "failStrategy": "FailWorkflow" }
+      },
+      {
+        "name": "validar",
+        "script": "validar_datos.sh",
+        "input": [ { "file": "@descargar" } ],
+        "output": "valido.txt",
+        "depends_on": ["descargar"],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "ContinueWorkflow" }
+      },
+      {
+        "name": "extraer",
+        "script": "extraer_valores.py",
+        "input": [ { "file": "@descargar" } ],
+        "output": "valores.txt",
+        "depends_on": ["descargar"],
+        "retryPolicy": { "maxRetries": 1, "failStrategy": "FailWorkflow" }
+      },
+      {
+        "name": "sumarizar",
+        "script": "sumarizar.js",
+        "input": [ { "file": "@extraer" }, { "file": "@validar" } ],
+        "output": null,
+        "depends_on": ["extraer", "validar"],
+        "retryPolicy": { "maxRetries": 2, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }
+  

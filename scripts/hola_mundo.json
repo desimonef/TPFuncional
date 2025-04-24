@@ -1,0 +1,13 @@
+{
+    "workflow_name": "hola_mundo",
+    "tasks": [
+      {
+        "name": "hello",
+        "command": "echo 'Hola Mundo'",
+        "input": [],
+        "output": null,
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }

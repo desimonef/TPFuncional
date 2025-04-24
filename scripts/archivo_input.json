@@ -1,0 +1,14 @@
+{
+    "workflow_name": "archivo_input",
+    "tasks": [
+      {
+        "name": "lee_archivo",
+        "script": "lee_archivo.py",
+        "input": [ { "file": "numero.txt" } ],
+        "output": null,
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 0, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }
+  

@@ -1,0 +1,14 @@
+{
+    "workflow_name": "fallo_y_reintento",
+    "tasks": [
+      {
+        "name": "inestable",
+        "command": "bash -c 'exit 1'",
+        "input": [],
+        "output": null,
+        "depends_on": [],
+        "retryPolicy": { "maxRetries": 2, "failStrategy": "FailWorkflow" }
+      }
+    ]
+  }
+  
