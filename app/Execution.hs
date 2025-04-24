@@ -162,6 +162,7 @@ resolveInputsFromState inputs state = return $ traverse resolve inputs
 
 processExecutionResult :: TaskOutput -> String -> String -> ExecutionMonad (Either String TaskOutput)
 processExecutionResult (OutputFile outPath) containerId _ = do
+  _ <- liftIO $ createDirectoryIfMissingSafe "./output"
   let hostPath = "./output/" ++ takeFileName outPath
   _ <- liftIO $ runCommand ["docker", "cp", containerId ++ ":/app/" ++ takeFileName outPath, hostPath]
   return $ Right (OutputFile hostPath)
