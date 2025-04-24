@@ -1,10 +1,8 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 module API (runServer) where
@@ -13,148 +11,170 @@ import Servant
 import Servant.Multipart
 import Network.Wai.Handler.Warp
 import Control.Monad.IO.Class (liftIO)
-import Database (DB, saveWorkflow, getWorkflows, getWorkflowById, getWorkflowByName, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, updateExecutionStatus)
-import System.Directory (createDirectoryIfMissing)
 import GHC.Generics (Generic)
-import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..))
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.ByteString.Lazy as BL
-import System.FilePath ((</>))
 import Control.Monad (filterM)
 import Data.List ((\\))
-import Workflows(executeWorkflow)
-import Data.Aeson(decode)
-import Data.Time.Clock (getCurrentTime, UTCTime)
+import Data.Time.Clock (getCurrentTime)
+import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..))
+import Workflows (executeWorkflow)
+import Monad (runDB, runExecutionMonad)
+import Database (saveWorkflow, getWorkflows, getWorkflowById, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, workflowNameExists, deleteWorkflow, replaceTaskContent, initDB)
+import Serialization (decodeJSONText, jsonErrorBody)
+import Filesystem (createDirectoryIfMissingSafe, writeLazyFile, joinPath, textToFilePath)
+import Execution(runExecutionPlans)
 
--- Definición de la API con respuestas HTTP adecuadas
+
+
+
+
+
 type WorkflowAPI =
        "workflows" :> ReqBody '[JSON] Workflow :> Post '[JSON] IdResponse
   :<|> "workflows" :> Get '[JSON] [WorkflowResponse]
   :<|> "workflows" :> Capture "id" Int :> Get '[JSON] WorkflowResponse
-  :<|> "workflows" :> QueryParam "name" String :> Get '[JSON] (Int, Workflow)
   :<|> "tasks" :> MultipartForm Mem TaskUpload :> Post '[JSON] IdResponse
   :<|> "tasks" :> Capture "id" Int :> Get '[JSON] (Int, String)
   :<|> "tasks" :> Get '[JSON] [(Int, String)]
   :<|> "workflows" :> Capture "id" Int :> "execution" :> Post '[JSON] ExecutionResponse
   :<|> "workflows" :> Capture "id" Int :> "execution" :> Get '[JSON] [ExecutionRecord]
   :<|> "workflows" :> "execution" :> Get '[JSON] [ExecutionRecord]
+  :<|> "workflows" :> Capture "id" Int :> Delete '[JSON] NoContent
+  :<|> "inputs" :> MultipartForm Mem InputUpload :> Post '[JSON] IdResponse
+  :<|> "tasks" :> MultipartForm Mem TaskUpload :> Patch '[JSON] NoContent
 
--- Tipo para recibir archivos
+
+
+
+
 data TaskUpload = TaskUpload { taskFile :: FileData Mem }
   deriving (Generic)
 
 instance FromMultipart Mem TaskUpload where
-    fromMultipart form = case lookupFile "taskFile" form of
-        Right file -> Right (TaskUpload file)
-        Left err   -> Left err
+    fromMultipart form = TaskUpload <$> lookupFile "taskFile" form
 
--- Implementación de los endpoints
-server :: DB -> Server WorkflowAPI
-server db =
+
+data InputUpload = InputUpload { inputFile :: FileData Mem } deriving (Generic)
+
+instance FromMultipart Mem InputUpload where
+    fromMultipart form = InputUpload <$> lookupFile "inputFile" form
+
+server :: Server WorkflowAPI
+server =
        addWorkflow
   :<|> listWorkflows
   :<|> getWorkflowByIdAPI
-  :<|> getWorkflowByNameAPI
   :<|> addTask
   :<|> getTaskByIdAPI
   :<|> listTasks
   :<|> executeWorkflowAPI
   :<|> getExecutionsByWorkflowAPI
   :<|> getAllExecutionsAPI
+  :<|> deleteWorkflowAPI
+  :<|> uploadInputFile
+  :<|> patchTask
+
+
   where
       addWorkflow :: Workflow -> Handler IdResponse
       addWorkflow wf = do
-          let scriptTasks = [script | Task { script = Just script } <- tasks wf]
-          existingTasks <- liftIO $ filterM (taskExists db) scriptTasks
-          let missingTasks = scriptTasks \\ existingTasks
-          if null missingTasks
-              then IdResponse <$> liftIO (saveWorkflow db wf)
-              else throwError err400 { errBody = BL.fromStrict (TE.encodeUtf8 (T.pack ("These script tasks are missing: " ++ show missingTasks))) }
+        exists <- liftIO $ runDB (workflowNameExists (workflow_name wf))
+        if exists
+            then throwError err409 { errBody = jsonErrorBody "Ya existe un workflow con ese nombre." }
+            else do
+            let scripts = [s | Task { script = Just s } <- tasks wf]
+            found <- liftIO $ filterM (runDB . taskExists) scripts
+            let missing = scripts \\ found
+            if null missing
+                then IdResponse <$> liftIO (runDB (saveWorkflow wf))
+                else throwError err400 { errBody = jsonErrorBody ("These script tasks are missing: " ++ show missing) }
+
+
 
       listWorkflows :: Handler [WorkflowResponse]
       listWorkflows = do
-          workflows <- liftIO $ getWorkflows db
-          return $ map (\(wid, name, def) -> WorkflowResponse wid name def) workflows
+        result <- liftIO $ runDB getWorkflows
+        return $ map (\(wid, wfName, def) -> WorkflowResponse wid wfName def) result
 
       getWorkflowByIdAPI :: Int -> Handler WorkflowResponse
-      getWorkflowByIdAPI wid = do
-          result <- liftIO $ getWorkflowById db wid
-          case result of
-              Just (wid, name, def) -> return $ WorkflowResponse wid name def
-              Nothing -> throwError err404 { errBody = "Workflow not found" }
-
-
-      getWorkflowByNameAPI :: Maybe String -> Handler (Int, Workflow)
-      getWorkflowByNameAPI (Just name) = do
-          result <- liftIO $ getWorkflowByName db name
-          case result of
-              Just wf -> return wf
-              Nothing -> throwError err404 { errBody = "Workflow not found" }
-      getWorkflowByNameAPI Nothing = throwError err400 { errBody = "Workflow name is required" }
+      getWorkflowByIdAPI wfId = do
+        result <- liftIO $ runDB (getWorkflowById wfId)
+        case result of
+            Just (wid, wfName, def) -> return $ WorkflowResponse wid wfName def
+            Nothing -> throwError err404 { errBody = "Workflow not found" }
 
       addTask :: TaskUpload -> Handler IdResponse
       addTask (TaskUpload file) = do
-          let dir = "./tasks"  
-              fileName = T.unpack $ fdFileName file
-              filePath = dir </> fileName  
-
-          liftIO $ do
-              createDirectoryIfMissing True dir  
-              BL.writeFile filePath (fdPayload file)  
-    
-          IdResponse <$> liftIO (saveTask db fileName) 
+          let fileName = textToFilePath (fdFileName file)
+              content = fdPayload file
+          IdResponse <$> liftIO (runDB (saveTask fileName content))
 
       getTaskByIdAPI :: Int -> Handler (Int, String)
       getTaskByIdAPI tid = do
-          result <- liftIO $ getTaskById db tid
+          result <- liftIO $ runDB (getTaskById tid)
           case result of
               Just task -> return task
               Nothing -> throwError err404 { errBody = "Task not found" }
 
       listTasks :: Handler [(Int, String)]
-      listTasks = liftIO $ getTasks db
+      listTasks = liftIO $ runDB getTasks
 
       executeWorkflowAPI :: Int -> Handler ExecutionResponse
-      executeWorkflowAPI wid = do
-          result <- liftIO $ getWorkflowById db wid
-          case result of
-              Just (_, _, def) -> case decode (BL.fromStrict (TE.encodeUtf8 def)) :: Maybe Workflow of
-                  Just workflow -> do
-                    -- Guardar ejecución con estado "started"
-                      timestamp <- liftIO getCurrentTime
-                      execId <- liftIO $ saveExecution db wid timestamp
-
-                    -- Ejecutar el workflow y obtener si fue exitoso o falló
-                      success <- liftIO $ executeWorkflow db workflow
-                    
-                    -- Determinar el estado final
-                      let finalStatus = if success then "completed" else "failed"
-                    
-                    -- Actualizar el estado en la BD
-                      liftIO $ updateExecutionStatus db execId finalStatus
-
-                    -- Responder a la API
-                      if success
-                          then return $ ExecutionResponse "Execution completed"
-                          else throwError err500 { errBody = "Workflow execution failed" }
-                  Nothing -> throwError err400 { errBody = "Invalid workflow format" }
-              Nothing -> throwError err404 { errBody = "Workflow not found" }
-
+      executeWorkflowAPI wfId = do
+        maybeWf <- liftIO $ runDB (getWorkflowById wfId)
+        case maybeWf of
+            Nothing -> throwError err404
+            Just (_, _, rawDef) -> do
+                liftIO $ putStrLn $ "Definición JSON recibida (raw): " ++ show rawDef
+                case decodeJSONText rawDef :: Maybe Workflow of
+                    Nothing -> throwError err500 { errBody = "Workflow malformado: JSON inválido" }
+                    Just wf -> do
+                        currentTime <- liftIO getCurrentTime
+                        _ <- liftIO $ runDB (saveExecution wfId currentTime)
+                        case executeWorkflow wf of
+                            Left err -> return $ ExecutionResponse False [err]
+                            Right plans -> do
+                                (ok, logLines) <- liftIO $ runExecutionMonad (runExecutionPlans plans)
+                                return $ ExecutionResponse ok logLines
 
       getExecutionsByWorkflowAPI :: Int -> Handler [ExecutionRecord]
-      getExecutionsByWorkflowAPI wid = do
-          executions <- liftIO $ getExecutionsByWorkflow db wid
-          return $ map (\(eid, wid, ts, status) -> ExecutionRecord eid wid ts status) executions
+      getExecutionsByWorkflowAPI wfId = do
+        rows <- liftIO $ runDB (getExecutionsByWorkflow wfId)
+        return $ map (\(eid, wid, ts, st) -> ExecutionRecord eid wid ts st) rows
 
       getAllExecutionsAPI :: Handler [ExecutionRecord]
       getAllExecutionsAPI = do
-          executions <- liftIO $ getAllExecutions db
-          return $ map (\(eid, wid, ts, status) -> ExecutionRecord eid wid ts status) executions
+        rows <- liftIO $ runDB getAllExecutions
+        return $ map (\(eid, wid, ts, st) -> ExecutionRecord eid wid ts st) rows
+
+      deleteWorkflowAPI :: Int -> Handler NoContent
+      deleteWorkflowAPI wid = do
+          deleted <- liftIO $ runDB (deleteWorkflow wid)
+          if deleted then return NoContent
+          else throwError err404 { errBody = jsonErrorBody "Workflow no encontrado para eliminar" }
+
+      uploadInputFile :: InputUpload -> Handler IdResponse
+      uploadInputFile (InputUpload file) = do
+          let fileName = fdFileName file
+          liftIO $ do
+              createDirectoryIfMissingSafe "./input"
+              writeLazyFile (joinPath "./input" (textToFilePath fileName)) (fdPayload file)
+          return $ IdResponse 0
+
+      patchTask :: TaskUpload -> Handler NoContent
+      patchTask (TaskUpload file) = do
+        let fileName = textToFilePath (fdFileName file)
+            content = fdPayload file
+        exists <- liftIO $ runDB (taskExists fileName)
+        if exists
+            then do
+            liftIO $ runDB (replaceTaskContent fileName content)
+            return NoContent
+            else throwError err404 { errBody = jsonErrorBody "Task no encontrada para actualizar" }
+    
+  
 
 
-
--- Función para levantar el servidor
-runServer :: DB -> IO ()
-runServer db = do
-    run 8081 (serve (Proxy :: Proxy WorkflowAPI) (server db))
+runServer :: IO ()
+runServer = do
+    initDB
+    run 8081 (serve (Proxy :: Proxy WorkflowAPI) server)
