@@ -16,7 +16,6 @@ module Types
   , RetryPolicy(..)
   , FailStrategy(..)
   , ExecutionPlan(..)
-  , WorkflowPatch(..)
   ) where
 
 import GHC.Generics (Generic)
@@ -90,11 +89,3 @@ data ExecutionPlan = ExecutionPlan
   , planRetries      :: Int
   , planFailStrategy :: FailStrategy
   } deriving (Show)
-
-data WorkflowPatch = WorkflowPatch {
-    newName :: Maybe String,
-    newDefinition :: Maybe Workflow
-} deriving (Show, Generic)
-
-
-

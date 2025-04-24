@@ -9,14 +9,14 @@ module Serialization
   , jsonErrorBody
   ) where
 
-import Data.Aeson (ToJSON(..), FromJSON, encode, decode, parseJSON, withObject, object, (.=), (.:?), Value(..), Object)
+import Data.Aeson (ToJSON(..), FromJSON, encode, decode, parseJSON, withObject, object, (.=), (.:?), Value(..))
 import Data.ByteString.Lazy (ByteString, fromStrict, toStrict)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 
 import Types (Workflow(..), Task(..), TaskInput(..), TaskOutput(..), IdResponse(..),
               WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..),
-              RetryPolicy(..), FailStrategy(..), WorkflowPatch(..))
+              RetryPolicy(..), FailStrategy(..))
 
 encodeJSON :: ToJSON a => a -> ByteString
 encodeJSON = encode
@@ -36,15 +36,6 @@ decodeJSONText = decodeJSON . fromStrict . encodeUtf8
 -- Convertir String a cuerpo de error HTTP (lazy ByteString)
 jsonErrorBody :: String -> ByteString
 jsonErrorBody = fromStrict . encodeUtf8 . T.pack
-
--- Convierte un valor JSON a String
-valueToString :: Value -> String
-valueToString (String s)  = T.unpack s
-valueToString (Number n)  = show n
-valueToString (Bool b)    = show b
-valueToString Null        = "null"
-valueToString (Array a)   = show a
-valueToString (Object o)  = show o
 
 -- Instancias JSON
 instance ToJSON Workflow
@@ -86,5 +77,3 @@ instance FromJSON RetryPolicy
 
 instance ToJSON FailStrategy
 instance FromJSON FailStrategy
-
-instance FromJSON WorkflowPatch

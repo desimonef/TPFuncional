@@ -15,21 +15,21 @@ module Database
   , getAllExecutions
   , updateExecutionStatus
   , workflowNameExists
-  , updateWorkflow
   , deleteWorkflow
   , replaceTaskContent
+  , getOutputsByWorkflow
   , initDB
   ) where
 
 import Control.Monad.Reader
 
-import Database.SQLite.Simple (Connection, execute, query, query_, Only(..), FromRow(..), ToRow(..), SQLData(..), changes, Query)
-import Data.String (fromString)
-import Database.SQLite.Simple.ToField (toField)
-import Database.SQLite.Simple (open, execute_, close, lastInsertRowId)
+import Database.SQLite.Simple 
+  ( Connection, open, close, execute, execute_
+  , query, query_, Only(..) 
+  , changes, lastInsertRowId)
 import Data.Time.Clock (UTCTime)
 import qualified Data.Text as T
-import Types (Workflow(..), WorkflowPatch(..))
+import Types (Workflow(..))
 import Serialization (encodeJSONText)
 import Monad (DatabaseMonad)
 import qualified Data.ByteString.Lazy as BL
@@ -81,7 +81,7 @@ getTaskById tid = do
     liftIO $ do
         rows <- query conn "SELECT id, name FROM tasks WHERE id = ?" (Only tid)
         return $ case rows of
-            [(id, name)] -> Just (id, T.unpack name)
+            [(taskId, name)] -> Just (taskId, T.unpack name)
             _            -> Nothing
 
 getTasks :: DatabaseMonad [(Int, String)]
@@ -89,7 +89,7 @@ getTasks = do
     conn <- ask
     liftIO $ do
         rows <- query_ conn "SELECT id, name FROM tasks"
-        return [(id, T.unpack name) | (id, name) <- rows]
+        return [(taskId, T.unpack name) | (taskId, name) <- rows]
 
 taskExists :: String -> DatabaseMonad Bool
 taskExists scriptName = do
@@ -131,21 +131,6 @@ workflowNameExists name = do
             [Only count] -> count > 0
             _            -> False
 
-updateWorkflow :: Int -> WorkflowPatch -> DatabaseMonad Bool
-updateWorkflow wid (WorkflowPatch mName mDef) = do
-    conn <- ask
-    let namePart = maybe "" (const ", name = ?") mName
-    let defPart  = maybe "" (const ", definition = ?") mDef
-    let sqlStr = "UPDATE workflows SET status = 'pending'" ++ namePart ++ defPart ++ " WHERE id = ?"
-        sql = fromString sqlStr
-        params = case (mName, mDef) of
-            (Just n, Just d) -> [toField n, toField (encodeJSONText d), toField wid]
-            (Just n, Nothing) -> [toField n, toField wid]
-            (Nothing, Just d) -> [toField (encodeJSONText d), toField wid]
-            _ -> [toField wid]
-    n <- liftIO $ execute conn sql params >> changes conn
-    return (n > 0)
-
 deleteWorkflow :: Int -> DatabaseMonad Bool
 deleteWorkflow wid = do
     conn <- ask
@@ -156,10 +141,16 @@ replaceTaskContent name newContent = do
   conn <- ask
   liftIO $ execute conn "UPDATE tasks SET content = ? WHERE name = ?" (newContent, name)
 
+getOutputsByWorkflow :: Int -> DatabaseMonad [(Int, Int, String, FilePath, UTCTime)]
+getOutputsByWorkflow wfId = do
+  conn <- ask
+  liftIO $ query conn "SELECT id, task_name, file_path, workflow_id FROM outputs WHERE workflow_id = ? ORDER BY timestamp DESC" (Only wfId)
+
+
 
 initDB :: IO ()
 initDB = do
-  conn <- open "workflows2.db"
+  conn <- open "workflows.db"
   execute_ conn "CREATE TABLE IF NOT EXISTS workflows (id INTEGER PRIMARY KEY, name TEXT UNIQUE, definition TEXT, status TEXT)"
   execute_ conn "CREATE TABLE IF NOT EXISTS executions (id INTEGER PRIMARY KEY, workflow_id INTEGER, timestamp TEXT, status TEXT)"
   execute_ conn "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, name TEXT UNIQUE, content BLOB)"

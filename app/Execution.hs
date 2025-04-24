@@ -9,7 +9,7 @@ import Monad (ExecutionMonad, getState, logMsg, updateState, ExecutionState, run
 import Database (getTaskContentByName)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (foldM)
-import Filesystem (convertToDockerPath, makeAbsolutePath, joinPath, fileExists, takeExtension, takeFileName, resolveInputPath, createDirectoryIfMissingSafe, writeLazyFile)
+import Filesystem (convertToDockerPath, makeAbsolutePath, joinPath, takeExtension, takeFileName, resolveInputPath, createDirectoryIfMissingSafe, writeLazyFile)
 
 runExecutionPlans :: [ExecutionPlan] -> ExecutionMonad Bool
 runExecutionPlans plans = do
@@ -20,12 +20,12 @@ runExecutionPlans plans = do
 runAndAccumulate :: Bool -> ExecutionPlan -> ExecutionMonad Bool
 runAndAccumulate False _ = return False
 runAndAccumulate True plan = do
-  logMsg $ "Ejecutando tarea: " ++ planTaskName plan
+  logMsg $ "\n==> Ejecutando tarea: " ++ planTaskName plan
   state <- getState
   resolvedArgsResult <- resolveInputsFromState (planArgs plan) state
   case resolvedArgsResult of
     Left err -> do
-      logMsg $ "Error resolviendo inputs para " ++ planTaskName plan ++ ": " ++ err
+      logMsg $ "[Input] Error resolviendo inputs: " ++ err
       return False
     Right resolvedArgs -> do
       let updatedPlan = plan { planArgs = resolvedArgs }
@@ -37,54 +37,53 @@ executePlanWithLogging plan = do
   case result of
     Right outVal -> do
       updateState (planTaskName plan) outVal
-      logMsg $ "Tarea " ++ planTaskName plan ++ " finalizada con salida: " ++ show outVal
+      logMsg $ "[OK] Tarea finalizada con salida: " ++ show outVal
       return True
     Left err -> do
-      logMsg $ "Error en tarea " ++ planTaskName plan ++ ": " ++ err
+      logMsg $ "[FAIL] Error en tarea: " ++ err
       handleFailStrategy (planFailStrategy plan)
 
 handleFailStrategy :: FailStrategy -> ExecutionMonad Bool
-handleFailStrategy FailWorkflow = logMsg "Estrategia de fallo: terminar workflow." >> return False
-handleFailStrategy ContinueWorkflow = logMsg "Estrategia de fallo: continuar workflow." >> return True
+handleFailStrategy FailWorkflow = logMsg "[FAIL-STRATEGY] Terminar workflow." >> return False
+handleFailStrategy ContinueWorkflow = logMsg "[FAIL-STRATEGY] Continuar workflow." >> return True
 
 logFinalState :: ExecutionMonad ()
 logFinalState = do
   finalState <- getState
   logMsg "\n== Estado final del workflow =="
-  mapM_ (\(t, o) -> logMsg $ "Tarea: " ++ t ++ ", Resultado: " ++ show o) finalState
+  mapM_ (\(t, o) -> logMsg $ " - Tarea: " ++ t ++ ", Resultado: " ++ show o) (reverse finalState)
+
 
 executeWithRetries :: ExecutionPlan -> Int -> ExecutionMonad (Either String TaskOutput)
 executeWithRetries plan retriesLeft = do
+  logMsg $ "[RETRY] Intentos restantes para " ++ planTaskName plan ++ ": " ++ show retriesLeft
   let cmd = planCommand plan
       inputs = planArgs plan
       expected = planOutput plan
   result <- executeInDocker plan cmd inputs expected
-
   case result of
     Right outVal -> return $ Right outVal
     Left err ->
       if retriesLeft > 0
         then do
-          logMsg $ "Reintentando tarea " ++ planTaskName plan ++ "... (" ++ show retriesLeft ++ " intentos restantes)"
+          logMsg $ "[RETRY] Reintentando tarea..."
           executeWithRetries plan (retriesLeft - 1)
         else return $ Left err
 
 executeInDocker :: ExecutionPlan -> String -> [TaskInput] -> TaskOutput -> ExecutionMonad (Either String TaskOutput)
 executeInDocker plan cmd inputs expectedOutput = do
-  logMsg $ "Seleccionando imagen para comando: " ++ show cmd
+  logMsg $ "[DOCKER] Comando recibido: " ++ show cmd
   let (dockerImage, interpreter) = selectDockerImage cmd
-  logMsg $ "Imagen seleccionada: " ++ dockerImage ++ ", intérprete: " ++ interpreter
-
+  logMsg $ "[DOCKER] Imagen: " ++ dockerImage ++ ", Intérprete: " ++ interpreter
   (_, scriptPath) <- prepareScript plan cmd
   resolvedInputs <- prepareInputs inputs
+  logMsg $ "[DOCKER] Inputs resueltos: " ++ show resolvedInputs
   runInContainer plan interpreter scriptPath resolvedInputs expectedOutput
 
 prepareScript :: ExecutionPlan -> String -> ExecutionMonad (String, FilePath)
 prepareScript plan cmd = do
-  let (dockerImage, interpreter) = selectDockerImage cmd
-  logMsg $ "Preparando script para comando: " ++ cmd
-  logMsg $ "Imagen seleccionada: " ++ dockerImage ++ ", intérprete: " ++ interpreter
-
+  let (_, interpreter) = selectDockerImage cmd
+  logMsg $ "[SCRIPT] Preparando script para: " ++ cmd
   absoluteScriptPath <- liftIO $ do
     let path = joinPath "tasks" cmd
     mbs <- runDB (getTaskContentByName cmd)
@@ -98,44 +97,42 @@ prepareScript plan cmd = do
             tempPath = joinPath "tasks" tempName
         writeFile tempPath cmd
         makeAbsolutePath tempPath
-
   dockerScriptPath <- liftIO $ convertToDockerPath absoluteScriptPath
+  logMsg $ "[SCRIPT] Script preparado en: " ++ dockerScriptPath
   return (interpreter, dockerScriptPath)
 
 prepareInputs :: [TaskInput] -> ExecutionMonad [FilePath]
 prepareInputs inputs = do
   let files = [fp | FileInput fp <- inputs]
-  liftIO $ mapM resolveInputPath files
+  results <- liftIO $ mapM resolveInputPath files
+  case sequence results of
+    Left err -> logAndFail "[INPUT] No se pudo resolver path de input" err >> return []
+    Right paths -> return paths
+
 
 runInContainer :: ExecutionPlan -> String -> FilePath -> [FilePath] -> TaskOutput -> ExecutionMonad (Either String TaskOutput)
 runInContainer plan interpreter dockerScriptPath resolvedFiles expectedOutput = do
   let containerName = planTaskName plan
       scriptFile = takeFileName dockerScriptPath
-
-  logMsg $ "Ruta convertida para Docker: " ++ dockerScriptPath
-
+  logMsg $ "[CONTAINER] Script: " ++ scriptFile ++ ", Tarea: " ++ containerName
   containerIdResult <- liftIO $ runCommand
     ["docker", "create", "--rm=false", "--name", containerName,
      "-v", dockerScriptPath ++ ":/app/" ++ scriptFile,
      fst (selectDockerImage scriptFile), "sh", "-c", "sleep infinity"]
-
   case containerIdResult of
-    Left err -> logAndFail "Error creando contenedor" err
+    Left err -> logAndFail "[CONTAINER] Error creando contenedor" err
     Right containerId -> do
-      logMsg $ "Contenedor creado con ID: " ++ containerId
+      logMsg $ "[CONTAINER] ID: " ++ containerId
       _ <- liftIO $ mapM (\file -> runCommand ["docker", "cp", file, containerId ++ ":/app/" ++ takeFileName file]) resolvedFiles
       _ <- liftIO $ runCommand ["docker", "start", containerId]
-
       let quotedArgs = map (\arg -> "\"" ++ getInputValue arg ++ "\"") (planArgs plan)
-      let execCmd = interpreter ++ " /app/" ++ scriptFile ++ " " ++ unwords quotedArgs
-
-      logMsg $ "Ejecutando script en contenedor: " ++ execCmd
-
+      let execCmd = "cd /app && " ++ interpreter ++ " " ++ scriptFile ++ " " ++ unwords quotedArgs
+      logMsg $ "[DOCKER-EXEC] Ejecutando: " ++ execCmd
       execResult <- liftIO $ runCommand ["docker", "exec", "-i", containerId, "sh", "-c", execCmd]
       case execResult of
-        Left err -> logAndFail "Error ejecutando script" err <* cleanupContainer containerId
+        Left err -> logAndFail "[DOCKER-EXEC] Fallo en ejecución" err <* cleanupContainer containerId
         Right outStr -> do
-          logMsg $ "Output del contenedor: " ++ outStr
+          logMsg $ "[DOCKER-OUTPUT] " ++ outStr
           result <- processExecutionResult expectedOutput containerId outStr
           _ <- cleanupContainer containerId
           return result

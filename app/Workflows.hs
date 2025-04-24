@@ -1,22 +1,21 @@
-{-# LANGUAGE DeriveGeneric #-}
 
 module Workflows (executeWorkflow, buildPlans) where
 
 import Graph (topologicalSort)
 import Types
   ( Workflow(..), Task(..), TaskNode(..)
-  , TaskInput(..), TaskOutput(..), RetryPolicy(..)
+  , TaskOutput(..), RetryPolicy(..)
   , FailStrategy(..), ExecutionPlan(..)
   )
 import Control.Applicative ((<|>))
 
 executeWorkflow :: Workflow -> Either String [ExecutionPlan]
 executeWorkflow (Workflow _ ts) =
-  case topologicalSort ts of
-    Left err -> Left err
-    Right ordered ->
-      let (plans, success) = buildPlans ordered []
-      in if success then Right plans else Left "Faltan comandos o scripts en una o más tareas."
+  let ordered = topologicalSort ts
+      (plans, success) = buildPlans ordered []
+  in if success
+       then Right plans
+       else Left "Faltan comandos o scripts en una o más tareas."
 
 buildPlans :: [TaskNode] -> [(String, TaskOutput)] -> ([ExecutionPlan], Bool)
 buildPlans [] _ = ([], True)

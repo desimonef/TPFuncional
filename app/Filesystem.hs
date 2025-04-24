@@ -51,9 +51,9 @@ toDockerWindowsPath path =
       rest  = drop 2 path
   in "/" ++ drive ++ map (\c -> if c == '\\' then '/' else c) rest
 
-resolveInputPath :: FilePath -> IO FilePath
+resolveInputPath :: FilePath -> IO (Either String FilePath)
 resolveInputPath path = do
   exists <- fileExists path
   if exists
-    then return path
-    else error $ "Archivo no encontrado: " ++ path
+    then return $ Right path
+    else return $ Left $ "Archivo no encontrado: " ++ path

@@ -1,11 +1,9 @@
-{-# LANGUAGE DeriveGeneric #-}
 
-module Graph (topologicalSort, taskName, detectCycles) where
+module Graph (topologicalSort, taskName) where
 
 import Types (Task(..), TaskNode(..), TaskGraph(..))
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe, mapMaybe)
-import Control.Monad (foldM)
 
 buildTaskGraph :: [Task] -> TaskGraph
 buildTaskGraph ts =
@@ -24,30 +22,21 @@ populateDependencies node adj allNodes =
 taskName :: TaskNode -> String
 taskName = name . task
 
-topologicalSort :: [Task] -> Either String [TaskNode]
+topologicalSort :: [Task] -> [TaskNode]
 topologicalSort ts =
   let TaskGraph nodeMap = buildTaskGraph ts
       nodes = map snd nodeMap
-  in dfsAll nodes [] []
+  in reverse (dfsAll nodes [])
 
-dfsAll :: [TaskNode] -> [TaskNode] -> [String] -> Either String [TaskNode]
-dfsAll [] sorted _ = Right sorted
-dfsAll (n:ns) sorted visited =
-  if taskName n elem visited
-    then dfsAll ns sorted visited
-    else do
-      (visited', sorted') <- dfs n visited sorted []
-      dfsAll ns sorted' visited'
+dfsAll :: [TaskNode] -> [TaskNode] -> [TaskNode]
+dfsAll [] sorted = sorted
+dfsAll (n:ns) sorted
+  | taskName n `elem` map taskName sorted = dfsAll ns sorted
+  | otherwise = dfsAll ns (dfs n sorted)
 
-dfs :: TaskNode -> [String] -> [TaskNode] -> [String] -> Either String ([String], [TaskNode])
-dfs node visited sorted recStack
-  | current elem recStack = Left $ "Ciclo detectado en la tarea: " ++ current
-  | current elem visited  = Right (visited, sorted)
-  | otherwise = do
-      (visited', sorted') <- foldM
-        (\(vAcc, sAcc) dep -> dfs dep vAcc sAcc (current : recStack))
-        (visited, sorted)
-        (dependencies node)
-      Right (current : visited', node : sorted')
-  where
-    current = taskName node
+dfs :: TaskNode -> [TaskNode] -> [TaskNode]
+dfs node sorted
+  | taskName node `elem` map taskName sorted = sorted
+  | otherwise =
+      let dfsSorted = foldr dfs sorted (dependencies node)
+      in node : dfsSorted

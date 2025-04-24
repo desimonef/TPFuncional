@@ -10,7 +10,7 @@ type DatabaseMonad = ReaderT Connection IO
 
 runDB :: DatabaseMonad a -> IO a
 runDB action = do
-  conn <- open "workflows2.db"
+  conn <- open "workflows.db"
   result <- runReaderT action conn
   close conn
   return result

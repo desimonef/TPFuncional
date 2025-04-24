@@ -15,14 +15,16 @@ import GHC.Generics (Generic)
 import Control.Monad (filterM)
 import Data.List ((\\))
 import Data.Time.Clock (getCurrentTime)
-import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..), WorkflowPatch(..))
+import Types (Workflow(..), Task(..), IdResponse(..), WorkflowResponse(..), ExecutionResponse(..), ExecutionRecord(..))
 import Workflows (executeWorkflow)
 import Monad (runDB, runExecutionMonad)
-import Database (saveWorkflow, getWorkflows, getWorkflowById, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, workflowNameExists, updateWorkflow, deleteWorkflow, replaceTaskContent, initDB)
+import Database (saveWorkflow, getWorkflows, getWorkflowById, saveTask, getTaskById, getTasks, taskExists, saveExecution, getAllExecutions, getExecutionsByWorkflow, workflowNameExists, deleteWorkflow, replaceTaskContent, initDB)
 import Serialization (decodeJSONText, jsonErrorBody)
 import Filesystem (createDirectoryIfMissingSafe, writeLazyFile, joinPath, textToFilePath)
 import Execution(runExecutionPlans)
-import Graph (topologicalSort, detectCycles)
+
+
+
 
 
 
@@ -36,10 +38,11 @@ type WorkflowAPI =
   :<|> "workflows" :> Capture "id" Int :> "execution" :> Post '[JSON] ExecutionResponse
   :<|> "workflows" :> Capture "id" Int :> "execution" :> Get '[JSON] [ExecutionRecord]
   :<|> "workflows" :> "execution" :> Get '[JSON] [ExecutionRecord]
-  :<|> "workflows" :> Capture "id" Int :> ReqBody '[JSON] WorkflowPatch :> Patch '[JSON] NoContent
   :<|> "workflows" :> Capture "id" Int :> Delete '[JSON] NoContent
   :<|> "inputs" :> MultipartForm Mem InputUpload :> Post '[JSON] IdResponse
   :<|> "tasks" :> MultipartForm Mem TaskUpload :> Patch '[JSON] NoContent
+
+
 
 
 
@@ -66,10 +69,10 @@ server =
   :<|> executeWorkflowAPI
   :<|> getExecutionsByWorkflowAPI
   :<|> getAllExecutionsAPI
-  :<|> updateWorkflowAPI
   :<|> deleteWorkflowAPI
   :<|> uploadInputFile
   :<|> patchTask
+
 
   where
       addWorkflow :: Workflow -> Handler IdResponse
@@ -82,9 +85,7 @@ server =
             found <- liftIO $ filterM (runDB . taskExists) scripts
             let missing = scripts \\ found
             if null missing
-                then case detectCycles (tasks wf) of
-                    Left cycleErr -> throwError err400 { errBody = jsonErrorBody ("Ciclo en definición de tareas: " ++ cycleErr) }
-                    Right _ -> IdResponse <$> liftIO (runDB (saveWorkflow wf))
+                then IdResponse <$> liftIO (runDB (saveWorkflow wf))
                 else throwError err400 { errBody = jsonErrorBody ("These script tasks are missing: " ++ show missing) }
 
 
@@ -145,12 +146,6 @@ server =
         rows <- liftIO $ runDB getAllExecutions
         return $ map (\(eid, wid, ts, st) -> ExecutionRecord eid wid ts st) rows
 
-      updateWorkflowAPI :: Int -> WorkflowPatch -> Handler NoContent
-      updateWorkflowAPI wid patch = do
-          updated <- liftIO $ runDB (updateWorkflow wid patch)
-          if updated then return NoContent
-          else throwError err404 { errBody = jsonErrorBody "Workflow no encontrado para actualizar" }
-
       deleteWorkflowAPI :: Int -> Handler NoContent
       deleteWorkflowAPI wid = do
           deleted <- liftIO $ runDB (deleteWorkflow wid)
@@ -175,7 +170,8 @@ server =
             liftIO $ runDB (replaceTaskContent fileName content)
             return NoContent
             else throwError err404 { errBody = jsonErrorBody "Task no encontrada para actualizar" }
-
+    
+  
 
 
 runServer :: IO ()
